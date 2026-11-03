@@ -269,6 +269,11 @@ test("Suspend defers work; resume completes; closing leaves no queued callback",
     eq(#f.queue,0);eq(f.writes,0)
     a:onResume();f:drain()
     eq(#f:images(a),1)
+    local pool=f.settings.data.screensaver_dir
+    a:onSuspend();a:onResume()
+    eq(f.settings.data.screensaver_dir,pool,"quick resume preserves the valid pool")
+    eq(f.settings.data.screensaver_type,"random_image")
+    f:drain()
     a:onAnnotationsModified();a:onCloseDocument();a:onCloseWidget()
     eq(#f.queue,0)
 end)

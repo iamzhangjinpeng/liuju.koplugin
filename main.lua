@@ -277,7 +277,11 @@ function Liuju:onResume()
     if self._job then
         local job = self._job
         self:_schedule(function() self:_step(job) end, 0.5)
-    elseif self:_current() then self:_queue_sync(false, false) end
+    elseif self:_current() and self.policy:check() then
+        -- Keep the valid current pool selected during a quick wake/sleep.
+        -- Explicit annotation changes and book switches still safeguard first.
+        self:_schedule(function() self:_start_sync() end, 0.5)
+    end
 end
 function Liuju:stopPlugin()
     if active_instance then active_instance:_shutdown() end
