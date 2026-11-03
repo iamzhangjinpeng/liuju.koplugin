@@ -1,8 +1,8 @@
 local Core = {}
 local sha256 = require("ffi/sha2").sha256
 
-Core.VERSION = "0.1.0-rc.1"
-Core.LAYOUT_VERSION = "receipt-1"
+Core.VERSION = "0.1.0-rc.2"
+Core.LAYOUT_VERSION = "album-poster-2"
 Core.DEFAULT_LIMIT = 80
 
 local function whitespace(cp)

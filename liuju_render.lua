@@ -26,15 +26,18 @@ function Renderer:render(book, entry, filename, width, height)
         rect(b.x, b.y, l.rule, b.h, gray)
         rect(b.x + b.w - l.rule, b.y, l.rule, b.h, gray)
     end
-    local function title(value, box, size, align)
+    local function title(value, box, size, align, colors)
+        colors = colors or {}
+        local options = { bold = true, align = align, gray = colors.gray or 28,
+            bgcolor = colors.bgcolor or 255, line_height = 0.35 }
         local value_now = self.core.shorten(value, 48)
-        local widget, h = text(value_now, box.w, size, { bold = true, align = align })
+        local widget, h = text(value_now, box.w, size, options)
         while h > box.h do
             local chars = self.core.characters(value_now)
             if not chars or #chars <= 2 then return end
             release(widget)
             value_now = self.core.shorten(value_now, #chars - 1)
-            widget, h = text(value_now, box.w, size, { bold = true, align = align })
+            widget, h = text(value_now, box.w, size, options)
         end
         widget:paintTo(canvas, box.x, box.y + math.floor((box.h - h) / 2))
     end
@@ -44,13 +47,13 @@ function Renderer:render(book, entry, filename, width, height)
         border(box, 168)
         local inset = l.p(16)
         title(book.title, { x = box.x + inset, y = box.y + inset,
-            w = box.w - inset * 2, h = box.h - inset * 2 }, l.p(25), "center")
+            w = box.w - inset * 2, h = box.h - inset * 2 }, l.p(25), "center", { bgcolor = 249 })
     end
     local ok, success, reason = pcall(function()
         local blocks, content_height = {}, 0
         if entry then
             if entry.text ~= "" then
-                local widget, h = text(entry.text, l.body.w, l.quote_size)
+                local widget, h = text(entry.text, l.body.w, l.quote_size, { line_height = l.line_height })
                 local width = l.body.w
                 -- Balance short, plain quotes by narrowing their text block,
                 -- never their font. Native shaping decides the line count;
@@ -61,7 +64,7 @@ function Renderer:render(book, entry, filename, width, height)
                         local low, high = math.floor(width * 0.35), width
                         while high - low > l.p(4) do
                             local middle = math.floor((low + high) / 2)
-                            local candidate, ch = text(entry.text, middle, l.quote_size)
+                            local candidate, ch = text(entry.text, middle, l.quote_size, { line_height = l.line_height })
                             if candidate:getAllLineCount() <= lines and ch <= h then
                                 release(widget)
                                 widget, width, high = candidate, middle, middle
@@ -72,14 +75,13 @@ function Renderer:render(book, entry, filename, width, height)
                         end
                     end
                 end
-                blocks[#blocks + 1] = { widget = widget, height = h, gap = 0,
-                    x = math.floor((l.body.w - width) / 2) }
+                blocks[#blocks + 1] = { widget = widget, height = h, gap = 0 }
                 content_height = h
             end
             if entry.note ~= "" then
                 local gap = content_height > 0 and l.note_gap or 0
                 local label, lh = text("笔记", l.body.w, l.label_size, { gray = 110 })
-                local note, nh = text(entry.note, l.body.w, l.note_size)
+                local note, nh = text(entry.note, l.body.w, l.note_size, { line_height = l.line_height })
                 blocks[#blocks + 1] = { widget = label, height = lh, gap = gap }
                 blocks[#blocks + 1] = { widget = note, height = nh, gap = l.note_label_gap }
                 content_height = content_height + gap + lh + l.note_label_gap + nh
@@ -87,36 +89,31 @@ function Renderer:render(book, entry, filename, width, height)
             if content_height > l.body.h - l.body_padding * 2 then return false, "layout" end
         end
         canvas = draw:canvas(l.width, l.height)
-        rect(0, 0, l.width, l.height, 246)
-        rect(l.paper.x, l.paper.y, l.paper.w, l.paper.h, 255)
-        border(l.paper, 184)
-        local brand = text("留句  /  LIUJU", l.label.w, l.label_size, { gray = 112 })
+        rect(0, 0, l.width, l.height, 255)
+        rect(l.footer.x, l.footer.y, l.footer.w, l.footer.h, 0)
+        rect(l.album.x + l.shadow, l.album.y + l.shadow, l.album.w, l.album.h, 112)
+        rect(l.album.x, l.album.y, l.album.w, l.album.h, 255)
+        border(l.album, 198)
+        cover(l.cover)
+        local brand = text("留句  /  LIUJU", l.label.w, l.label_size, { gray = 170, bgcolor = 0 })
         brand:paintTo(canvas, l.label.x, l.label.y)
+        title(book.title, l.title, l.title_size, "left", { gray = 255, bgcolor = 0 })
         if entry then
-            cover(l.cover)
-            title(book.title, l.title, l.title_size, "left")
-            local x = l.divider.x
-            while x < l.divider.x + l.divider.w do
-                rect(x, l.divider.y, math.min(l.dash, l.divider.x + l.divider.w - x), l.rule, 164)
-                x = x + l.dash + l.dash_gap
-            end
-            local y = l.body.y + math.floor((l.body.h - content_height) / 2)
+            local y = l.body.y
             for _, block in ipairs(blocks) do
                 y = y + block.gap
-                block.widget:paintTo(canvas, l.body.x + (block.x or 0), y)
+                block.widget:paintTo(canvas, l.body.x, y)
                 y = y + block.height
             end
-            rect(l.footer.x, l.footer.y, l.p(40), l.rule, 112)
             if entry.date ~= "" then
-                local date = text(entry.date, l.footer.w, l.date_size, { gray = 100 })
-                date:paintTo(canvas, l.footer.x, l.footer.y + l.p(21))
+                local date = text(entry.date, l.body.w, l.date_size, { gray = 116 })
+                date:paintTo(canvas, l.body.x, y + l.date_gap)
             end
         else
-            local box = { x = math.floor((l.width - l.p(565)) / 2),
-                y = l.p(220), w = l.p(565), h = l.p(805) }
-            cover(box)
-            title(book.title, { x = l.body.x, y = l.p(1080),
-                w = l.body.w, h = l.p(165) }, l.title_size, "center")
+            local reading, rh = text("正在阅读", l.body.w, l.label_size, { gray = 116 })
+            reading:paintTo(canvas, l.body.x, l.body.y)
+            title(book.title, { x = l.body.x, y = l.body.y + rh + l.p(45),
+                w = l.body.w, h = l.p(260) }, l.quote_size, "left")
         end
         local written, err = canvas:writePNG(filename)
         if not written then return nil, "write: " .. tostring(err) end

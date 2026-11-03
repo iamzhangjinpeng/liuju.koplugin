@@ -57,12 +57,15 @@ class Painter:
         line_height = math.floor(float(size) * (1 + float(options["line_height"] or 0.48)) + 0.5)
         height = line_height * len(lines)
         key = self.next_id()
-        self.widgets[key] = (lines, font, line_height, int(width), options["align"], int(options["gray"] or 28))
+        gray = 28 if options["gray"] is None else int(options["gray"])
+        background = 255 if options["bgcolor"] is None else int(options["bgcolor"])
+        self.widgets[key] = (lines, font, line_height, int(width), options["align"], gray, background)
         return key, height, len(lines)
 
     def paint_text(self, key, canvas, x, y):
-        lines, font, line_height, width, align, gray = self.widgets[key]
+        lines, font, line_height, width, align, gray, background = self.widgets[key]
         draw = ImageDraw.Draw(self.canvases[canvas])
+        draw.rectangle((x, y, x + width - 1, y + line_height * len(lines) - 1), fill=background)
         for i, line in enumerate(lines):
             advance = font.getlength(line)
             dx = (width - advance) / 2 if align == "center" else width - advance if align == "right" else 0
@@ -172,22 +175,14 @@ def main():
     missing = out / "missing-cover.png"
     assert render(lua.table_from({"title": "一本没有封面的书"}), None, str(missing)) is True
 
-    # A second header proportion is evaluated against the same renderer.
-    lua.execute("""
-        original_layout=layout.for_screen
-        layout.for_screen=function(w,h)
-            local l=original_layout(w,h)
-            l.cover={x=146,y=212,w=140,h=200}
-            l.title={x=335,y=217,w=583,h=175}
-            l.divider.y=463; l.body.y=520; l.body.h=630
-            return l
-        end
-    """)
-    candidate = out / "candidate-compact.png"
-    assert render(book, lua.table_from({"text": medium, "note": "", "date": "2026.11.03"}), str(candidate)) is True
-    lua.execute("layout.for_screen=original_layout")
+    assert render(lua.table_from({"title": "一本没有封面的书"}),
+                  lua.table_from({"text": short, "note": "", "date": "2026.11.03"}),
+                  str(out / "missing-cover-with-quote.png")) is True
+    assert render(lua.table_from({"title": "慢读的日子：关于散步、停留、阅读和日常生活的温柔观察与私人记录", "cover": cover}),
+                  lua.table_from({"text": medium, "note": "", "date": "2026.11.03"}),
+                  str(out / "long-title.png")) is True
     for name, items, thumb_w in [
-        ("design-comparison.png", [(out / "medium.png", "A · 标准封面（选用）"), (candidate, "B · 紧凑封面")], 402),
+        ("design-comparison.png", [(out / "previous-receipt.png", "原小票布局"), (out / "medium.png", "新分享海报布局")], 402),
         ("selected-gallery.png", rendered, 268),
     ]:
         thumb_h = round(1448 / 1072 * thumb_w)

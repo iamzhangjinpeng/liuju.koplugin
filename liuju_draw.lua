@@ -30,7 +30,8 @@ function Draw:text(text, width, pixels, options)
         bold = options.bold, line_height = options.line_height or 0.48,
         alignment = options.align or "left", alignment_strict = true,
         justified = false, auto_para_direction = true,
-        fgcolor = BB.Color8(options.gray or 28), bgcolor = BB.COLOR_WHITE,
+        fgcolor = BB.Color8(options.gray or 28),
+        bgcolor = options.bgcolor ~= nil and BB.Color8(options.bgcolor) or BB.COLOR_WHITE,
     }
 end
 

@@ -88,7 +88,8 @@ local real_dofile = dofile
 local function fixture()
     fixture_id = fixture_id + 1
     local f = { root = SCRATCH .. "/case-" .. fixture_id, queue = {}, indices = {}, writes = 0,
-        texts = {}, frees = 0, live_widgets = 0, live_covers = 0, messages = {}, warnings = {} }
+        texts = {}, painted_texts = {}, rectangles = {}, frees = 0,
+        live_widgets = 0, live_covers = 0, messages = {}, warnings = {} }
     py_mkdir(f.root)
     local s = settings()
     G_reader_settings = s
@@ -99,7 +100,8 @@ local function fixture()
         for i=#f.queue,1,-1 do if f.queue[i] == cb then table.remove(f.queue,i) end end
     end
     function uimanager:show(widget) f.messages[#f.messages+1] = widget.text end
-    local function textwidget(text, width, size)
+    local function textwidget(text, width, size, options)
+        options = options or {}
         f.live_widgets = f.live_widgets + 1
         local freed = false
         f.texts[#f.texts+1] = text
@@ -108,17 +110,21 @@ local function fixture()
             lines = lines + math.max(1,math.ceil(#(Core.characters(line) or {})/columns))
         end
         return {
-            getSize = function() return {h=math.ceil(size*1.48)*lines} end,
+            getSize = function() return {h=math.floor(size*(1+(options.line_height or 0.48))+0.5)*lines} end,
             getAllLineCount = function() return lines end,
-            paintTo = function() end, free = function()
+            paintTo = function(_,canvas,x,y)
+                f.painted_texts[#f.painted_texts+1] = {text=text,x=x,y=y,options=options}
+            end, free = function()
                 assert(not freed,"text widget freed twice")
                 freed = true; f.live_widgets = f.live_widgets - 1
             end,
         }
     end
     local draw = {
-        text = function(_,text,width,size) return textwidget(text,width,size) end,
-        rect = function() end,
+        text = function(_,text,width,size,options) return textwidget(text,width,size,options) end,
+        rect = function(_,canvas,x,y,w,h,gray)
+            f.rectangles[#f.rectangles+1]={x=x,y=y,w=w,h=h,gray=gray}
+        end,
         cover = function() return false end,
         canvas = function(_,w,h)
             return {
@@ -330,6 +336,35 @@ test("Unsupported annotation APIs are reported and never treated as an empty mig
     eq(f.settings.data.screensaver_document_cover,a.ui.document.file)
     eq(a._job,nil)
 end)
+test("Poster places excerpts above a lower-left album and white book title on the black footer",function()
+    local layout=real_dofile(TEST_ROOT.."/liuju_layout.lua")
+    for _,size in ipairs({{1072,1448},{600,800},{1448,1072}}) do
+        local l=layout.for_screen(size[1],size[2])
+        eq(l.footer.x,0);eq(l.footer.w,l.width);eq(l.footer.y+l.footer.h,l.height)
+        assert(l.body.y<l.height*0.25)
+        assert(l.body.y+l.body.h<l.album.y)
+        assert(l.body.y+l.body.h+l.date_gap+math.ceil(l.date_size*1.48)<l.album.y)
+        assert(l.album.x<l.width*0.25 and l.album.x+l.album.w<l.title.x)
+        assert(l.title.y>=l.footer.y and l.title.y+l.title.h<=l.height)
+        assert(l.album.y<l.footer.y and l.album.y+l.album.h>l.footer.y)
+        eq(l.album.w,l.album.h)
+    end
+    local f=fixture();local a=f:reader("A",{annotation("正文在上方")});f:drain()
+    local l=layout.for_screen(1072,1448)
+    local title_seen,body_seen,footer_seen=false,false,false
+    for _,paint in ipairs(f.painted_texts) do
+        if paint.text=="测试书 A" and paint.x==l.title.x then
+            eq(paint.options.gray,255);eq(paint.options.bgcolor,0)
+            assert(paint.y>=l.footer.y);title_seen=true
+        elseif paint.text=="正文在上方" then
+            eq(paint.x,l.body.x);eq(paint.y,l.body.y);body_seen=true
+        end
+    end
+    for _,rect in ipairs(f.rectangles) do
+        if rect.x==0 and rect.y==l.footer.y and rect.w==l.width and rect.gray==0 then footer_seen=true end
+    end
+    assert(title_seen and body_seen and footer_seen)
+end)
 test("Production drawing adapter applies DPI once and preserves cover aspect ratio",function()
     local raw_size, image_args, image_freed
     package.loaded["device"]={screen={scaleBySize=function(_,value)return value*2 end}}
@@ -343,6 +378,8 @@ test("Production drawing adapter applies DPI once and preserves cover aspect rat
     local draw=real_dofile(TEST_ROOT.."/liuju_draw.lua")
     local widget=draw:text("文字",772,46)
     eq(raw_size,23);eq(widget.face.size,46);eq(widget.height,nil,"no native clipping height")
+    local white=draw:text("白字书名",572,40,{gray=255,bgcolor=0})
+    eq(white.fgcolor,255);eq(white.bgcolor,0)
     assert(draw:cover({}, {getWidth=function()return 420 end,getHeight=function()return 600 end},
         {x=146,y=181,w=180,h=256}))
     eq(image_args.width,179);eq(image_args.height,256)
