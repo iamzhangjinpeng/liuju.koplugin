@@ -172,7 +172,7 @@ liuju.koplugin/
 
 ## 本轮完成与下一步
 
-当前已推进至候选版实现与本地检查，详见 [实现记录](IMPLEMENTATION-STATUS.md)。下一步按 [KPW4 实机清单](DEVICE-VALIDATION.md) 验证原生字形、真实锁屏与设备表现，再完成正式发布。
+0.1.0 已完成本地检查。安装包仅含运行文件，详见 [实现记录](IMPLEMENTATION-STATUS.md)。原生字形、真实锁屏与设备表现待按 [KPW4 实机清单](DEVICE-VALIDATION.md) 验证。
 
 参考源码：
 

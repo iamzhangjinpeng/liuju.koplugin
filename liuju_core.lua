@@ -1,7 +1,6 @@
 local Core = {}
 local sha256 = require("ffi/sha2").sha256
 
-Core.VERSION = "0.1.0-rc.9"
 Core.LAYOUT_VERSION = "album-player-4"
 Core.DEFAULT_LIMIT = 80
 

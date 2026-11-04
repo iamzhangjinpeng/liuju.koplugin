@@ -90,6 +90,23 @@ test("Screen settings restore unset values and preserve a later provider choice"
     eq(s.data.screensaver_dir,"/calendar")
 end)
 
+test("A damaged screen settings backup restores its usable values and allows re-enabling", function()
+    local s = settings({ screensaver_type = "cover", screensaver_show_message = true })
+    local policy = Policy.new(s)
+    assert(policy:apply{ dir = "/liuju" })
+    local backup = s.data[Policy.LEASE].backup
+    backup.screensaver_max_files = nil
+    backup.screensaver_stretch_images = true
+    eq(policy:owns(), false)
+    eq(policy:check(), false)
+    eq(s.data[Policy.LEASE], nil)
+    eq(s.data.screensaver_type, "cover")
+    eq(s.data.screensaver_show_message, true)
+    policy:enable()
+    eq(policy:apply{ dir = "/liuju" }, true)
+    eq(policy:owns(), true)
+end)
+
 local fixture_id = 0
 local real_dofile = dofile
 local function fixture()

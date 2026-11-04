@@ -11,6 +11,11 @@ local keys = {
 }
 local target_keys = { random_image = "screensaver_dir", document_cover = "screensaver_document_cover" }
 
+local function valid_backup(saved)
+    return type(saved) == "table" and type(saved.present) == "boolean"
+        and saved.present == (saved.value ~= nil)
+end
+
 function Policy.new(settings)
     return setmetatable({ settings = settings }, Policy)
 end
@@ -20,7 +25,11 @@ function Policy:enabled()
 end
 
 function Policy:_matches(lease)
-    if type(lease) ~= "table" or lease.version ~= 1 or type(lease.applied) ~= "table" then return false end
+    if type(lease) ~= "table" or lease.version ~= 1
+            or type(lease.backup) ~= "table" or type(lease.applied) ~= "table" then return false end
+    for _, key in ipairs(keys) do
+        if not valid_backup(lease.backup[key]) then return false end
+    end
     for key, value in pairs(lease.applied) do
         if self.settings:readSetting(key) ~= value then return false end
     end
@@ -40,7 +49,7 @@ function Policy:_restore_owned(lease)
     local changed_active_target = target_key and self.settings:readSetting(target_key) ~= lease.applied[target_key]
     for _, key in ipairs(keys) do
         local applied, saved = lease.applied[key], lease.backup[key]
-        if applied ~= nil and saved and self.settings:readSetting(key) == applied
+        if applied ~= nil and valid_backup(saved) and self.settings:readSetting(key) == applied
                 and (key ~= "screensaver_type" or not changed_active_target) then
             if saved.present then self.settings:saveSetting(key, saved.value)
             else self.settings:delSetting(key) end
@@ -84,7 +93,7 @@ function Policy:apply(target)
         screensaver_max_files = math.max(256, tonumber(target.count) or 0,
             tonumber(lease.backup.screensaver_max_files.value) or 0),
     }
-    if next(lease.applied) and self:_matches{ version = 1, applied = applied } then return true end
+    if next(lease.applied) and self:_matches{ version = 1, backup = lease.backup, applied = applied } then return true end
     lease.applied = applied
     self.settings:saveSetting(self.LEASE, lease)
     for key, value in pairs(applied) do self.settings:saveSetting(key, value) end

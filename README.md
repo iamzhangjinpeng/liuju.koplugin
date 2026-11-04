@@ -2,7 +2,7 @@
 
 把当前阅读书籍中简短的高亮与批注，排成带封面和标注日期的锁屏壁纸。每次 Kindle 休眠时随机展示一张，换书时自动切换图片池。
 
-**当前版本：0.1.0-rc.9 候选版。** 目标设备为 KPW4，已完成本机回归与桌面视觉检查，尚待 KPW4 实机确认。KOReader 的具体版本待确认；插件使用现代的 annotations 接口。
+**当前版本：0.1.0。** 面向已越狱并安装 KOReader 的 Kindle，主要支持 EPUB。已完成本地回归和桌面视觉检查，KPW4 的实机锁屏与最低 KOReader 版本待验证。
 
 ![留句壁纸样图](previews/selected-gallery.png)
 
@@ -21,9 +21,9 @@
 
 “锁屏”指 KOReader 运行期间的睡眠屏幕。设备由 Kindle 系统管理休眠屏幕时，留句会让出屏保设置。
 
-## 安装候选版
+## 安装
 
-1. 获取名为 `liuju.koplugin-v0.1.0-rc.9.zip` 的安装包，解压得到 `liuju.koplugin` 文件夹。
+1. 下载并解压安装包，得到 `liuju.koplugin` 文件夹。[下载 liuju.koplugin-v0.1.0.zip](https://github.com/iamzhangjinpeng/liuju.koplugin/releases/download/v0.1.0/liuju.koplugin-v0.1.0.zip)
 2. 完全退出 KOReader，将文件夹复制到 Kindle 的：
 
    ```text
@@ -43,7 +43,7 @@
 
 如果同时使用单向历，请先关闭单向历的“自动配置屏保”，再启用留句。两者设置的是同一套 KOReader 屏保。留句发现用户或其他插件改换屏保后，会让出配置并关闭自身开关；需要重新使用时可在菜单里开启。
 
-GitHub 的源码 ZIP 解压后带有分支后缀，手动安装源码时需将目录改为 `liuju.koplugin`。
+安装包只包含运行所需的八个 Lua 文件。开发文档、测试和样图可在仓库查看。
 
 从 rc.7 或更早版本升级后，重新打开书籍即可登记完整文件摘要并更新小票。书库中如果原书已删除、被替换或尚未核验，锁屏会使用通用屏保。若只是暂时无法核验，原书恢复后可在下次休眠时继续显示小票。
 
@@ -82,7 +82,7 @@ python3 -m venv .venv
 - [开发流程与验收标准](docs/DEVELOPMENT-WORKFLOW.md)
 - [实现与接口核验记录](docs/IMPLEMENTATION-STATUS.md)
 - [KPW4 实机验收步骤](docs/DEVICE-VALIDATION.md)
-- [候选版变更记录](CHANGELOG.md)
+- [版本变更记录](CHANGELOG.md)
 
 中文名称为「留句」，GitHub 仓库名和安装目录统一使用 `liuju.koplugin`。
 
