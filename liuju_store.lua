@@ -64,15 +64,19 @@ function Store.valid_png(path, w, h)
     return true
 end
 
-function Store.new(root, state_root, book_id, width, height)
+function Store.open_index(state_root, book_id)
     assert(book_id:match("^%x+$") and #book_id == 64, "Invalid book ID")
+    return LuaSettings:open(state_root .. "/" .. book_id .. ".lua")
+end
+
+function Store.new(root, state_root, book_id, width, height)
+    local index = Store.open_index(state_root, book_id)
     directory(root)
     directory(state_root)
     local book_dir = root .. "/" .. book_id
     local dir = book_dir .. "/pool"
     directory(book_dir)
     directory(dir)
-    local index = LuaSettings:open(state_root .. "/" .. book_id .. ".lua")
     return setmetatable({
         dir = dir, book_dir = book_dir, state_root = state_root, book_id = book_id, width = width, height = height,
         index = index, skipped = index:readSetting("skipped") or {},
@@ -84,6 +88,13 @@ end
 local function is_candidate(dir, path)
     return type(path) == "string" and path:sub(1, #dir + 1) == dir .. "/" and managed(path:sub(#dir + 2))
         and mode(path) == "file"
+end
+
+function Store.indexed_candidate(index, dir, path, limit)
+    if not is_candidate(dir, path) then return false end
+    local counts = index:readSetting("counts")
+    local count = type(counts) == "table" and counts[path:sub(#dir + 2)]
+    return type(count) == "number" and count > 0 and count <= limit
 end
 
 function Store.decode_candidate(dir, path, width, height)
@@ -133,6 +144,8 @@ function Store:reconcile(entries, force)
         if kind == "file" and managed(name) then
             if counts[name] and valid_png_header(path, self.width, self.height) then
                 available[name] = true
+            elseif not counts[name] and type(self.counts) == "table" and not self.counts[name] then
+                self:_exclude(path, name)
             else
                 remove(path)
             end

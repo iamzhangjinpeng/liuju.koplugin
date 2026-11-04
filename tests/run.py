@@ -25,7 +25,8 @@ def run():
             except OSError:
                 return None
             kind = "link" if stat.S_ISLNK(result.st_mode) else "directory" if stat.S_ISDIR(result.st_mode) else "file"
-            data = {"mode": kind, "size": result.st_size, "modification": result.st_mtime}
+            data = {"mode": kind, "size": result.st_size, "modification": result.st_mtime,
+                    "change": result.st_ctime, "ino": result.st_ino}
             return data.get(field) if field else lua.table_from(data)
 
         def write_png(path, width, height):

@@ -1,7 +1,7 @@
 local Core = {}
 local sha256 = require("ffi/sha2").sha256
 
-Core.VERSION = "0.1.0-rc.6"
+Core.VERSION = "0.1.0-rc.7"
 Core.LAYOUT_VERSION = "album-player-4"
 Core.DEFAULT_LIMIT = 80
 
@@ -14,48 +14,69 @@ end
 
 -- LuaJIT strings contain bytes. Decode strictly so invalid UTF-8 never reaches
 -- the native text shaper, and whitespace is counted consistently.
+local function decode(text, i)
+    local first = text:byte(i)
+    local n, cp, minimum
+    if first < 0x80 then n, cp, minimum = 1, first, 0
+    elseif first >= 0xC2 and first <= 0xDF then n, cp, minimum = 2, first - 0xC0, 0x80
+    elseif first >= 0xE0 and first <= 0xEF then n, cp, minimum = 3, first - 0xE0, 0x800
+    elseif first >= 0xF0 and first <= 0xF4 then n, cp, minimum = 4, first - 0xF0, 0x10000
+    else return nil end
+    for j = 1, n - 1 do
+        local b = text:byte(i + j)
+        if not b or b < 0x80 or b > 0xBF then return nil end
+        cp = cp * 64 + b - 0x80
+    end
+    if cp < minimum or cp > 0x10FFFF or (cp >= 0xD800 and cp <= 0xDFFF) then return nil end
+    if (cp < 32 and cp ~= 9 and cp ~= 10 and cp ~= 13) or cp == 127 then return nil end
+    return i + n, cp
+end
+
 function Core.characters(text)
     if type(text) ~= "string" then return nil end
     local result, i = {}, 1
     while i <= #text do
-        local first = text:byte(i)
-        local n, cp, minimum
-        if first < 0x80 then n, cp, minimum = 1, first, 0
-        elseif first >= 0xC2 and first <= 0xDF then n, cp, minimum = 2, first - 0xC0, 0x80
-        elseif first >= 0xE0 and first <= 0xEF then n, cp, minimum = 3, first - 0xE0, 0x800
-        elseif first >= 0xF0 and first <= 0xF4 then n, cp, minimum = 4, first - 0xF0, 0x10000
-        else return nil end
-        for j = 1, n - 1 do
-            local b = text:byte(i + j)
-            if not b or b < 0x80 or b > 0xBF then return nil end
-            cp = cp * 64 + b - 0x80
-        end
-        if cp < minimum or cp > 0x10FFFF or (cp >= 0xD800 and cp <= 0xDFFF) then return nil end
-        if (cp < 32 and cp ~= 9 and cp ~= 10 and cp ~= 13) or cp == 127 then return nil end
-        result[#result + 1] = { text = text:sub(i, i + n - 1), cp = cp, space = whitespace(cp) }
-        i = i + n
+        local next_i, cp = decode(text, i)
+        if not next_i then return nil end
+        result[#result + 1] = { text = text:sub(i, next_i - 1), cp = cp, space = whitespace(cp) }
+        i = next_i
     end
     return result
 end
 
+local function scan(text, limit)
+    local i, count, first, last = 1, 0, nil, nil
+    while i <= #text do
+        local next_i, cp = decode(text, i)
+        if not next_i then return nil, "invalid_text" end
+        if not whitespace(cp) then
+            count = count + 1
+            if limit and count > limit then return nil, "too_long" end
+            first, last = first or i, next_i - 1
+        end
+        i = next_i
+    end
+    return count, nil, first, last
+end
+
 function Core.count(text)
-    local chars = Core.characters(text)
-    if not chars then return nil end
-    local count = 0
-    for _, ch in ipairs(chars) do if not ch.space then count = count + 1 end end
-    return count
+    if type(text) == "string" then
+        local count = scan(text)
+        return count
+    end
+end
+
+local function clean(text, limit)
+    if type(text) ~= "string" then return "", 0 end
+    local count, why, first, last = scan(text, limit)
+    if not count then return nil, why end
+    if not first then return "", 0 end
+    return (text:sub(first, last):gsub("\r\n", "\n"):gsub("\r", "\n")), count
 end
 
 function Core.clean(text)
-    text = type(text) == "string" and text:gsub("\r\n", "\n"):gsub("\r", "\n") or ""
-    local chars = Core.characters(text)
-    if not chars then return nil end
-    local first, last = 1, #chars
-    while first <= last and chars[first].space do first = first + 1 end
-    while last >= first and chars[last].space do last = last - 1 end
-    local result = {}
-    for i = first, last do result[#result + 1] = chars[i].text end
-    return table.concat(result)
+    local value = clean(text)
+    return value
 end
 
 function Core.shorten(text, length)
@@ -112,18 +133,19 @@ end
 
 function Core.collect(annotations, limit, render_key)
     local entries, reasons, seen = {}, {}, {}
+    limit = Core.limit(limit)
     local function skip(reason) reasons[reason] = (reasons[reason] or 0) + 1 end
     for _, item in ipairs(type(annotations) == "table" and annotations or {}) do
         if type(item) == "table" then
-            local text, note = Core.clean(item.text), Core.clean(item.note)
             local highlighted = item.drawer ~= nil or (item.pos0 ~= nil and item.pos1 ~= nil)
-            if not highlighted then text = "" end -- page bookmark auto-text is not an excerpt
-            local count = text and note and Core.count(text .. note)
-            if not count then skip("invalid_text")
+            local text, text_count = clean(highlighted and item.text, limit)
+            local note, note_count
+            if text then note, note_count = clean(item.note, limit - text_count) end
+            if not text then skip(text_count)
+            elseif not note then skip(note_count)
             elseif note ~= "" and item.note_format and item.note_format ~= ""
                     and item.note_format ~= "plain" and item.note_format ~= "text" then skip("formatted_note")
-            elseif count == 0 then skip("empty")
-            elseif count > Core.limit(limit) then skip("too_long")
+            elseif text_count + note_count == 0 then skip("empty")
             else
                 local id = sha256(Core.pack({ item.datetime, position(item.page), position(item.pos0), position(item.pos1) }))
                 local date = Core.date(item.datetime)
@@ -131,7 +153,7 @@ function Core.collect(annotations, limit, render_key)
                 if not seen[digest] then
                     seen[digest] = true
                     entries[#entries + 1] = {
-                        id = id, text = text, note = note, date = date, count = count,
+                        id = id, text = text, note = note, date = date, count = text_count + note_count,
                         filename = "liuju-" .. digest .. ".png",
                     }
                 end

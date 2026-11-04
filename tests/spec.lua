@@ -181,11 +181,23 @@ local function fixture()
         ["datastorage"] = {getDataDir=function() return f.root end,getSettingsDir=function() return f.root.."/settings" end},
         ["docsettings"] = {},
         ["device"] = {screen={getWidth=function()return 1072 end,getHeight=function()return 1448 end}},
-        ["util"] = {makePath=function(path) return py_mkdir(path) end},
+        ["util"] = {
+            makePath=function(path) return py_mkdir(path) end,
+            partialMD5=function(path)
+                local file = io.open(path, "rb")
+                if not file then return end
+                local digest = py_hash(file:read("*a"))
+                file:close()
+                return digest
+            end,
+        },
         ["logger"] = {warn=function(...)f.warnings[#f.warnings+1]={...}end},
         ["gettext"] = function(t)return t end,
         ["libs/libkoreader-lfs"] = {
-            attributes=function(path,field)return py_attrs(path,field,false)end,
+            attributes=function(path,field)
+                if path == f.fixed_path and not field then return f.fixed_attrs end
+                return py_attrs(path,field,false)
+            end,
             symlinkattributes=function(path,field)return py_attrs(path,field,true)end,
             dir=function(path)
                 local names=py_list(path); local i=0
@@ -210,7 +222,7 @@ local function fixture()
         instance:init()
         return instance
     end
-    function f:reader(name, annotations)
+    function f:reader(name, annotations, doc_settings)
         local path=self.root.."/"..name..".epub"
         local existing=io.open(path,"rb")
         if existing then existing:close()
@@ -226,6 +238,7 @@ local function fixture()
                 end}
             end},
             doc_props={title="测试书 "..name},
+            doc_settings=doc_settings,
             annotation={annotations=annotations},
             menu={registerToMainMenu=function()end},
         }
@@ -607,6 +620,109 @@ test("A damaged generated cover is replaced when a book has no eligible cards", 
     f:drain()
     eq(f:select(), cover)
     eq(f.settings.data.screensaver_type, "document_cover")
+end)
+test("Deleted and unverified recent books cannot expose cached cards in the library", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("最近阅读") })
+    f:drain()
+    local image = f:images(a)[1]
+    local source = a.ui.document.file
+    local last = f.settings.data.liuju_last_book
+    a:onCloseDocument()
+    a:onCloseWidget()
+    local manager = f:manager()
+    local stamp = last.source
+    last.source = nil
+    eq(f:select(image), "resources/koreader.png")
+    manager:_preview()
+    eq(f.preview, nil)
+    last.source = stamp
+    assert(os.remove(source))
+    eq(f:select(image), "resources/koreader.png")
+    manager:_preview()
+    eq(f.preview, nil)
+end)
+test("Replacing a book at the same path suppresses its old cache before regeneration", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("原来的书") })
+    f:drain()
+    local images, store = f:images(a)
+    local old_cover_source = store.index:readSetting("cover_source")
+    a:onCloseDocument()
+    a:onCloseWidget()
+    local manager = f:manager()
+    local source = a.ui.document.file
+    f.fixed_path, f.fixed_attrs = source, py_attrs(source, nil, false)
+    local replacement = assert(io.open(source .. ".new", "wb"))
+    replacement:write("B")
+    replacement:close()
+    assert(os.rename(source .. ".new", source))
+    eq(f:select(images[1]), "resources/koreader.png")
+    manager:_preview()
+    eq(f.preview, nil)
+    local b = f:reader("A", { annotation("替换后的书") })
+    eq(f:select(), source)
+    eq(store.index:readSetting("cover_source"), old_cover_source)
+    f:drain()
+    assert(store.index:readSetting("cover_source") ~= old_cover_source)
+    assert(f:images(b)[1] ~= images[1])
+end)
+test("Sleep rejects a decodable managed-name card missing from the current book's index", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("甲书的摘录") })
+    f:drain()
+    local from = f:images(a)[1]
+    local b = f:reader("B", { annotation("乙书的摘录") })
+    f:drain()
+    local images, store = f:images(b)
+    local name = from:match("([^/]+)$")
+    local foreign = store.dir .. "/" .. name
+    local input, output = assert(io.open(from, "rb")), assert(io.open(foreign, "wb"))
+    assert(output:write(input:read("*a")))
+    input:close()
+    output:close()
+    eq(f:select(foreign), store.fallback)
+    f:drain()
+    eq(f:select(images[1]), images[1])
+    eq(io.open(foreign, "rb"), nil)
+    assert(io.open(store.book_dir .. "/excluded/" .. name, "rb")):close()
+end)
+test("Book-level sleep exclusion survives closing and is lifted when opening another book", function()
+    local f = fixture()
+    local privacy = settings({ exclude_screensaver = true })
+    local a = f:reader("A", { annotation("私密摘录") }, privacy)
+    f:drain()
+    eq(f.writes, 0)
+    eq(f:select(), "resources/koreader.png")
+    privacy:delSetting("exclude_screensaver")
+    f:select()
+    f:drain()
+    local cached = f:images(a)[1]
+    eq(f:select(cached), cached)
+    privacy:saveSetting("exclude_screensaver", true)
+    a:onCloseDocument()
+    a:onCloseWidget()
+    f:manager()
+    eq(f:select(cached), "resources/koreader.png")
+    local b = f:reader("B", { annotation("另一本文字") })
+    f:drain()
+    eq(f:select(f:images(b)[1]), f:images(b)[1])
+end)
+test("Character screening handles long quotes and combined notes without a character table", function()
+    local characters = Core.characters
+    Core.characters = function() error("screening built a full character table") end
+    local ok, entries, reasons = pcall(Core.collect, {
+        annotation(string.rep("长", 200000)),
+        annotation(string.rep("字", 79), "笔记"),
+        annotation("　甲\r\n乙　", "　丙\r丁  "),
+    }, 80, "test")
+    Core.characters = characters
+    assert(ok, entries)
+    eq(#entries, 1)
+    eq(reasons.too_long, 2)
+    eq(entries[1].text, "甲\n乙")
+    eq(entries[1].note, "丙\n丁")
+    eq(entries[1].count, 4)
 end)
 test("Preview never borrows the last book's images when the current book has no cache", function()
     local f = fixture()
