@@ -139,7 +139,7 @@ function Store:_exclude(path, name)
     assert(ok, "Cannot move foreign wallpaper: " .. tostring(err))
 end
 
-function Store:reconcile(entries, force)
+function Store:reconcile(entries, force, receipt_key)
     local counts, skipped, available = {}, {}, {}
     for _, item in ipairs(entries) do
         counts[item.filename] = item.count
@@ -176,7 +176,9 @@ function Store:reconcile(entries, force)
         end
     end
     self.skipped = skipped
-    if not same_counts(self.counts, counts) then
+    local key_changed = receipt_key and self.index:readSetting("receipt_key") ~= receipt_key
+    if key_changed then self.index:saveSetting("receipt_key", receipt_key) end
+    if key_changed or not same_counts(self.counts, counts) then
         self.counts = counts
         self.index:saveSetting("counts", counts)
         self:save_index()

@@ -51,6 +51,30 @@ local function total(reasons)
     return n
 end
 
+local function saved_receipts(settings, index, limit)
+    -- Before receipt_key was stored separately, a rendered cover shared the same key.
+    local key = index:readSetting("receipt_key") or index:readSetting("cover_key")
+    local counts = index:readSetting("counts")
+    local allowed = {}
+    if type(key) == "string" and type(counts) == "table" then
+        local entries = Core.collect(settings:readSetting("annotations"), limit, key)
+        for _, entry in ipairs(entries) do
+            if counts[entry.filename] == entry.count then allowed[entry.filename] = true end
+        end
+    end
+    return allowed
+end
+
+local function alternate_receipt(dir, allowed, width, height)
+    local names = {}
+    for name in pairs(allowed) do names[#names + 1] = name end
+    while #names > 0 do
+        local path = dir .. "/" .. table.remove(names, math.random(#names))
+        local image = Store.decode_candidate(dir, path, width, height)
+        if image then return path, image end
+    end
+end
+
 local function screen_size()
     local screen = Device.screen
     local width, height = screen:getWidth(), screen:getHeight()
@@ -85,7 +109,7 @@ local function install_screensaver_hook()
     function Screensaver:setup(event, ...)
         local plugin = not event and active_instance
         if not plugin then return setup(self, event, ...) end
-        local ok, dir, last, fallback = pcall(plugin._before_sleep, plugin)
+        local ok, dir, last, fallback, saved = pcall(plugin._before_sleep, plugin)
         if not ok then
             logger.warn("留句: 无法检查屏保状态", tostring(dir))
             fallback = plugin.policy:owns()
@@ -93,7 +117,7 @@ local function install_screensaver_hook()
         if fallback then return setup_default(setup, self, event, ...) end
         local result = setup(self, event, ...)
         if ok and last and (self.screensaver_type == "random_image" or self.screensaver_type == "cover") then
-            local checked, err = pcall(plugin._validate_selection, plugin, self, dir, last)
+            local checked, err = pcall(plugin._validate_selection, plugin, self, dir, last, saved)
             if not checked then
                 logger.warn("留句: 无法检查屏保图片", tostring(err))
                 show_default(self)
@@ -119,9 +143,14 @@ function Liuju:init()
     self.ui.menu:registerToMainMenu(self)
     if self.screensaver_supported and self.policy:enabled() then self.policy:check()
     else self.policy:restore(false) end
-    -- ReaderReady handles normal opening. This path handles re-enabling a
-    -- plugin while a reader is already initialized.
-    if self.ui.document and self.ui.doc_props then self:onReaderReady() end
+    -- ReaderReady handles normal opening. In the library, recover an enable
+    -- saved by an older version that did not set up the screensaver there.
+    if self.ui.document and self.ui.doc_props then
+        self:onReaderReady()
+    elseif not self.ui.document and self.screensaver_supported and self.policy:enabled()
+            and not G_reader_settings:readSetting(Policy.LEASE) then
+        self:_restore_recent_screen()
+    end
 end
 
 function Liuju:_clear_timer()
@@ -194,6 +223,31 @@ function Liuju:_fallback(last)
         return cover
     end
     return last.file
+end
+
+function Liuju:_restore_recent_screen()
+    local ok, applied = pcall(function()
+        local last = G_reader_settings:readSetting(LAST_BOOK)
+        if not source_matches(last) or last.excluded then return false end
+        local saved = DocSettings:open(last.file)
+        if saved:readSetting("exclude_screensaver") == true then return false end
+        local store = Store.new(self.root, self.state_root, last.id, last.width, last.height)
+        local limit = Core.limit(G_reader_settings:readSetting(LIMIT))
+        local images = store:images(limit, saved_receipts(saved, store.index, limit))
+        for _, path in ipairs(images) do
+            if Store.valid_png(path, store.width, store.height) then
+                local dir = path:match("^(.+)/[^/]+$")
+                return self.policy:apply{ dir = dir, count = #images + 8 }
+            end
+        end
+        util.makePath(self.empty_dir)
+        return self.policy:apply{ dir = self.empty_dir, image = self:_fallback(last) }
+    end)
+    if not ok then
+        logger.warn("留句: 无法在书库恢复屏保", tostring(applied))
+        return false
+    end
+    return applied
 end
 
 function Liuju:_safeguard()
@@ -299,12 +353,17 @@ function Liuju:_before_sleep()
     if G_reader_settings:readSetting("screensaver_type") == "document_cover"
             and G_reader_settings:readSetting("screensaver_document_cover") == DEFAULT_IMAGE then return end
     if not source_matches(last) then return nil, nil, true end
+    local saved
+    if not current then
+        saved = DocSettings:open(last.file)
+        if saved:readSetting("exclude_screensaver") == true then return nil, nil, true end
+    end
     if current and not self._pending and self:_annotations_changed() then self:_queue_sync(false, false) end
     local kind = G_reader_settings:readSetting("screensaver_type")
     if kind == "random_image" then
         local dir = G_reader_settings:readSetting("screensaver_dir")
         local book_dir = self.root .. "/" .. last.id
-        if dir == book_dir .. "/pool" or dir == book_dir then return dir, last end
+        if dir == book_dir .. "/pool" or dir == book_dir then return dir, last, nil, saved end
     elseif kind == "document_cover" then
         local path = G_reader_settings:readSetting("screensaver_document_cover")
         if path == self.state_root .. "/" .. last.id .. "-cover.png" then return nil, last end
@@ -313,13 +372,24 @@ function Liuju:_before_sleep()
     return nil, nil, true
 end
 
-function Liuju:_validate_selection(screensaver, dir, last)
+function Liuju:_validate_selection(screensaver, dir, last, saved)
     local path = screensaver.image_file
     local cover = self.state_root .. "/" .. last.id .. "-cover.png"
     local index = Store.open_index(self.state_root, last.id)
-    local indexed = dir and Store.indexed_candidate(index, dir, path, Core.limit(G_reader_settings:readSetting(LIMIT)))
-    local cover_matches = index:readSetting("cover_source") == cover_source(last)
+    local limit = Core.limit(G_reader_settings:readSetting(LIMIT))
+    local indexed = dir and Store.indexed_candidate(index, dir, path, limit)
     local image
+    if indexed and saved then
+        local allowed = saved_receipts(saved, index, limit)
+        indexed = allowed[path:sub(#dir + 2)] == true
+        if not indexed then
+            -- KOReader may pick a cached file for a deleted or edited annotation.
+            local replacement
+            replacement, image = alternate_receipt(dir, allowed, last.width, last.height)
+            if image then screensaver.image_file = replacement end
+        end
+    end
+    local cover_matches = index:readSetting("cover_source") == cover_source(last)
     if indexed then image = Store.decode_candidate(dir, path, last.width, last.height)
     elseif not dir and path == cover and cover_matches then image = Store.decode_png(cover, last.width, last.height) end
     if image then
@@ -430,7 +500,7 @@ function Liuju:_step(job)
     local ok, err = pcall(function()
         local delay
         if job.index == 0 then
-            local available = job.store:reconcile(job.entries, job.force)
+            local available = job.store:reconcile(job.entries, job.force, job.key)
             job.todo = {}
             for _, entry in ipairs(job.entries) do
                 local valid = available[entry.filename]
@@ -537,7 +607,7 @@ function Liuju:onCloseDocument()
         local ok, err = pcall(function()
             if not self:_safeguard() then return end
             local job = self:_prepare_job({})
-            local available = job.store:reconcile(job.entries, false)
+            local available = job.store:reconcile(job.entries, false, job.key)
             if next(available) then self.policy:apply{ dir = job.store.dir, count = #job.entries + 8 } end
         end)
         if not ok then logger.warn("留句: 关书时无法核对缓存", tostring(err)) end
@@ -617,8 +687,18 @@ function Liuju:_preview()
             notify(_("请先打开一本书生成小票。"))
             return
         end
-        ok, store = pcall(Store.new, self.root, self.state_root, last.id, last.width, last.height)
-        if ok and store.index:readSetting("cover_source") == cover_source(last) then fallback = store.fallback end
+        ok, store, allowed, fallback = pcall(function()
+            local saved = DocSettings:open(last.file)
+            if saved:readSetting("exclude_screensaver") == true then return end
+            local recent = Store.new(self.root, self.state_root, last.id, last.width, last.height)
+            local limit = Core.limit(G_reader_settings:readSetting(LIMIT))
+            local cover = recent.index:readSetting("cover_source") == cover_source(last) and recent.fallback
+            return recent, saved_receipts(saved, recent.index, limit), cover
+        end)
+        if ok and not store then
+            notify(_("这本书已设为不显示在休眠屏幕。"))
+            return
+        end
     end
     local images
     if ok then
@@ -666,8 +746,13 @@ function Liuju:addToMainMenu(items)
                         notify(_("留句屏保已关闭。"))
                     else
                         self.policy:enable()
-                        self:_queue_sync(false, true)
-                        if not self:_current() then notify(_("打开书籍后，将自动生成留句壁纸。")) end
+                        if self:_current() then
+                            self:_queue_sync(false, true)
+                        elseif self:_restore_recent_screen() then
+                            notify(_("留句屏保已启用。"))
+                        else
+                            notify(_("打开书籍后，将自动生成留句壁纸。"))
+                        end
                     end
                 end,
             },

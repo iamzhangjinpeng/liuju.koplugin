@@ -2,7 +2,7 @@
 
 把当前阅读书籍中简短的高亮与批注，排成带封面和标注日期的锁屏壁纸。每次 Kindle 休眠时随机展示一张，换书时自动切换图片池。
 
-**当前正式版为 1.0.1。** 面向已越狱并安装 KOReader 的 Kindle，主要支持 EPUB。0.1.1 的壁纸基础功能已在 Kindle Paperwhite 4（KOReader v2026.07.2）通过实机测试。
+**当前正式版为 1.0.2。** 面向已越狱并安装 KOReader 的 Kindle，主要支持 EPUB。0.1.1 的壁纸基础功能已在 Kindle Paperwhite 4（KOReader v2026.07.2）通过实机测试。
 
 ![留句壁纸样图](previews/selected-gallery.png)
 
@@ -23,7 +23,7 @@
 
 ## 安装
 
-1. 下载并解压安装包，得到 `liuju.koplugin` 文件夹。[下载 liuju.koplugin-v1.0.1.zip](https://github.com/iamzhangjinpeng/liuju.koplugin/releases/download/v1.0.1/liuju.koplugin-v1.0.1.zip)
+1. 下载并解压安装包，得到 `liuju.koplugin` 文件夹。[下载 liuju.koplugin-v1.0.2.zip](https://github.com/iamzhangjinpeng/liuju.koplugin/releases/download/v1.0.2/liuju.koplugin-v1.0.2.zip)
 2. 完全退出 KOReader，将文件夹复制到 Kindle 的：
 
    ```text
@@ -57,7 +57,7 @@
 | 更新当前书的小票 | 阅读 EPUB 等支持的书籍时，可以手动重新生成小票。完成后会显示可用张数和跳过条数。该操作需要启用留句屏保。 |
 | 预览一张 | 阅读时随机预览当前书的一张小票。生成中或暂无小票时会提示状态，已有封面壁纸时会同时显示封面。在书库可以预览最近一本经核对的书。 |
 
-在书库调低字数上限时，留句会立即筛选最近一本书的小票。旧版缓存如果还没有字数记录，会先显示封面，重新打开书籍时再核对旧图。
+在书库启用留句时，会尝试恢复最近一本经核对的书的小票；若只是旧版保存了启用状态、尚未接管屏保，重启 KOReader 后也会尝试恢复。最近一本书的批注会重新核对，已删除或修改摘录对应的旧图不会显示。调低字数上限时，留句会立即筛选最近一本书的小票。旧版缓存如果还没有字数记录，会先显示封面，重新打开书籍时再核对旧图。
 
 ## 图片缓存与卸载
 

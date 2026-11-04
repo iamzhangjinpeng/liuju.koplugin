@@ -113,7 +113,8 @@ local function fixture()
     fixture_id = fixture_id + 1
     local f = { root = SCRATCH .. "/case-" .. fixture_id, queue = {}, indices = {}, writes = 0,
         texts = {}, painted_texts = {}, rectangles = {}, frees = 0,
-        live_widgets = 0, live_covers = 0, live_images = 0, cover_reads = 0, flushes = 0, messages = {}, warnings = {} }
+        live_widgets = 0, live_covers = 0, live_images = 0, cover_reads = 0, flushes = 0, messages = {}, warnings = {},
+        saved_docs = {} }
     py_mkdir(f.root)
     local s = settings()
     G_reader_settings = s
@@ -208,7 +209,7 @@ local function fixture()
         ["ui/widget/imageviewer"] = {new=function(_,t) return t end},
         ["ui/widget/infomessage"] = {new=function(_,t)return t end},
         ["datastorage"] = {getDataDir=function() return f.root end,getSettingsDir=function() return f.root.."/settings" end},
-        ["docsettings"] = {},
+        ["docsettings"] = {open = function(_, path) return f.saved_docs[path] or settings() end},
         ["device"] = {
             supportsScreensaver = function() return not f.native_sleep_only end,
             screen={getWidth=function()return 1072 end,getHeight=function()return 1448 end},
@@ -240,13 +241,25 @@ local function fixture()
     end
     local plugin = assert(loadfile(TEST_ROOT.."/main.lua"))()
     dofile = real_dofile
+    function f:save_reader()
+        if self.instance then
+            local reader = self.instance.ui
+            self.saved_docs[reader.document.file] = settings{
+                annotations = reader.annotation and reader.annotation.annotations,
+                exclude_screensaver = reader.doc_settings and reader.doc_settings:readSetting("exclude_screensaver"),
+            }
+            self.instance = nil
+        end
+    end
     function f:manager()
+        self:save_reader()
         local ui = {menu = {registerToMainMenu = function() end}}
         local instance = setmetatable({ui = ui}, {__index = plugin})
         instance:init()
         return instance
     end
     function f:reader(name, annotations, doc_settings, extension)
+        self:save_reader()
         local path=self.root.."/"..name..(extension or ".epub")
         local existing=io.open(path,"rb")
         if existing then existing:close()
@@ -420,6 +433,78 @@ test("Screen restoration occurs on plugin stop, not ordinary reader close",funct
     eq(f.settings.data.screensaver_type,"message")
     eq(f.settings.data.screensaver_dir,nil)
 end)
+test("Enabling from the library immediately uses verified receipts from the last book", function()
+    local f = fixture()
+    f.settings.data.screensaver_type = "message"
+    local reader = f:reader("A", { annotation("书库启用前已有小票") })
+    f:drain()
+    local images, store = f:images(reader)
+    eq(#images, 1)
+    store.index:delSetting("receipt_key") -- An existing cache can still use its cover key.
+    reader:onCloseDocument()
+
+    local library = f:manager()
+    local menu = {}
+    library:addToMainMenu(menu)
+    local toggle = menu.liuju.sub_item_table[1]
+    toggle.callback()
+    eq(f.settings.data.screensaver_type, "message")
+    library:_preview()
+    eq(f.preview, images[1])
+
+    toggle.callback()
+    eq(toggle.checked_func(), true)
+    eq(f.settings.data.screensaver_type, "random_image")
+    eq(f:select(images[1]), images[1])
+    eq(#f.queue, 0)
+
+    toggle.callback()
+    library.policy:enable() -- Older versions could persist only the enable flag.
+    local reopened_library = f:manager()
+    eq(f:select(images[1]), images[1])
+    eq(#f.queue, 0)
+
+    reopened_library.policy:restore(false)
+    assert(os.remove(reader.ui.document.file))
+    f:manager()
+    eq(f.settings.data.screensaver_type, "message")
+    eq(f.settings.data.liuju_screensaver_lease, nil)
+end)
+
+test("The library hides receipts for annotations deleted while the plugin was disabled", function()
+    local f = fixture()
+    local removed, kept = annotation("稍后删除的摘录"), annotation("保留的摘录")
+    local reader = f:reader("A", { removed, kept })
+    f:drain()
+    local images, store = f:images(reader)
+    eq(#images, 2)
+    local entries = Core.collect({ removed, kept }, 80, store.index:readSetting("receipt_key"))
+    local obsolete = store.dir .. "/" .. entries[1].filename
+    local valid = store.dir .. "/" .. entries[2].filename
+    local library = f:manager()
+    eq(f:select(obsolete), obsolete)
+
+    local saved = f.saved_docs[reader.ui.document.file]
+    saved:saveSetting("annotations", { kept })
+    eq(f:select(obsolete), valid)
+    library:_preview()
+    eq(f.preview, valid)
+
+    saved:saveSetting("exclude_screensaver", true)
+    eq(f:select(valid), "resources/koreader.png")
+    saved:delSetting("exclude_screensaver")
+
+    library.policy:restore(true)
+    saved:saveSetting("annotations", {})
+    local menu = {}
+    library:addToMainMenu(menu)
+    menu.liuju.sub_item_table[1].callback()
+    eq(f.settings.data.screensaver_type, "document_cover")
+    eq(f:select(), store.fallback)
+    library:_preview()
+    eq(f.preview, store.fallback)
+end)
+
 test("Closing before generation records the current book; disabled startup restores a lease",function()
     local f=fixture()
     f.settings.data.screensaver_type="message"
