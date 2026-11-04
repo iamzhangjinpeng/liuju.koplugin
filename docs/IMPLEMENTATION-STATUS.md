@@ -1,6 +1,6 @@
 # 留句实现记录
 
-日期：2026-11-03；候选版本：0.1.0-rc.2。
+日期：2026-11-04；候选版本：0.1.0-rc.3。
 
 ## 目标与完成情况
 
@@ -30,6 +30,7 @@ KPW4 设计基准中，正文 52 像素、笔记 46 像素、底栏书名 40 像
 
 - `ReaderAnnotation.annotations`：当前文档标注；`text` 为原文、`note` 为用户笔记、`datetime` 为创建时间。
 - `ReaderReady` 与 `AnnotationsModified`：书籍准备完成、标注发生变化后的入口。回调延迟到当前事件完成后再读取。
+- Kindle 在派发 `Suspend` 前调用 `Screensaver:setup()`。留句在普通休眠选图前核对标注快照，覆盖未广播 `AnnotationsModified` 的编辑。
 - `BookInfo:getCoverImage(document)`：读取原始或自定义封面，生成任务结束或取消时释放返回的图像。
 - `TextBoxWidget`：不设置裁剪高度，读取完整渲染尺寸和行数后决定是否可生成。
 - `Font:getFace` 自身执行屏幕缩放：绘图适配器先补偿该缩放，避免 KPW4 上字号被放大两次。

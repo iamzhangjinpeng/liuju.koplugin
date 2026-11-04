@@ -89,10 +89,11 @@ local function fixture()
     fixture_id = fixture_id + 1
     local f = { root = SCRATCH .. "/case-" .. fixture_id, queue = {}, indices = {}, writes = 0,
         texts = {}, painted_texts = {}, rectangles = {}, frees = 0,
-        live_widgets = 0, live_covers = 0, messages = {}, warnings = {} }
+        live_widgets = 0, live_covers = 0, cover_reads = 0, flushes = 0, messages = {}, warnings = {} }
     py_mkdir(f.root)
     local s = settings()
     G_reader_settings = s
+    function s:flush() f.flushes = f.flushes + 1 end
     f.settings = s
     local uimanager = {}
     function uimanager:scheduleIn(delay, cb) f.queue[#f.queue+1] = cb end
@@ -143,6 +144,12 @@ local function fixture()
     local modules = {
         ["ui/widget/container/widgetcontainer"] = {extend=function(_,t) return t end},
         ["ui/uimanager"] = uimanager,
+        ["ui/screensaver"] = { setup = function(screensaver, event)
+            screensaver.screensaver_type = s.data[(event and event .. "_" or "") .. "screensaver_type"]
+                or s.data.screensaver_type
+            screensaver.image_file = screensaver.screensaver_type == "random_image" and f.next_image
+                or s.data.screensaver_document_cover
+        end },
         ["ui/widget/infomessage"] = {new=function(_,t)return t end},
         ["datastorage"] = {getDataDir=function() return f.root end,getSettingsDir=function() return f.root.."/settings" end},
         ["device"] = {screen={getWidth=function()return 1072 end,getHeight=function()return 1448 end}},
@@ -176,6 +183,7 @@ local function fixture()
         else local h=assert(io.open(path,"wb"));h:write(name);h:close() end
         local ui={
             document={file=path,getCoverPageImage=function()
+                f.cover_reads = f.cover_reads + 1
                 f.live_covers = f.live_covers + 1
                 local freed=false
                 return {free=function()
@@ -191,6 +199,12 @@ local function fixture()
         instance:init()
         self.instance=instance
         return instance
+    end
+    function f:select(path, event)
+        self.next_image = path
+        local screensaver = modules["ui/screensaver"]
+        screensaver:setup(event)
+        return screensaver.image_file, screensaver.screensaver_type
     end
     function f:step()
         local callback=table.remove(self.queue,1)
@@ -294,7 +308,7 @@ end)
 test("Reconciliation preserves unrelated files and disables itself on a provider change",function()
     local f=fixture();local a=f:reader("A",{annotation("旧内容")});f:drain()
     local images,store=f:images(a)
-    local path=store.dir.."/my-photo.png"
+    local path=store.book_dir.."/my-photo.png"
     local h=assert(io.open(path,"wb"));h:write("not managed");h:close()
     a.ui.annotation.annotations={};a:onAnnotationsModified();f:drain()
     local kept=assert(io.open(path,"rb"));kept:close()
@@ -335,6 +349,118 @@ test("Unsupported annotation APIs are reported and never treated as an empty mig
     assert(f.messages[1]:find("KOReader",1,true))
     eq(f.settings.data.screensaver_document_cover,a.ui.document.file)
     eq(a._job,nil)
+end)
+test("Sleep detects silent edits before choosing an image and resumes the pending update", function()
+    local f = fixture()
+    local row = annotation("摘录", "旧笔记")
+    local a = f:reader("A", { row })
+    f:drain()
+    local old = f:images(a)[1]
+    row.note = "新笔记"
+    eq(#f.queue, 0)
+    eq(f:select(old, "reboot"), old, "event-specific setup bypasses the ordinary sleep hook")
+    eq(#f.queue, 0)
+    local image, kind = f:select(old)
+    eq(kind, "document_cover")
+    assert(image:match("%-cover%.png$"))
+    a:onSuspend()
+    eq(#f.queue, 0)
+    a:onResume()
+    f:drain()
+    local updated = f:images(a)[1]
+    assert(updated ~= old)
+    row.text = "编辑后的摘录"
+    image, kind = f:select(updated)
+    eq(kind, "document_cover")
+    f:drain()
+    assert(f:images(a)[1] ~= updated)
+end)
+test("Changing stretch restores the former screensaver without discarding the user's change", function()
+    local f = fixture()
+    f.settings.data.screensaver_type = "cover"
+    f.settings.data.screensaver_dir = "/previous"
+    f.settings.data.screensaver_show_message = true
+    local a = f:reader("A", { annotation("甲") })
+    f:drain()
+    f.settings.data.screensaver_stretch_images = false
+    local _, kind = f:select(f:images(a)[1])
+    eq(kind, "cover")
+    eq(a.policy:enabled(), false)
+    eq(f.settings.data.screensaver_dir, "/previous")
+    eq(f.settings.data.screensaver_stretch_images, false)
+    eq(f.settings.data.screensaver_show_message, true)
+    local b = f:reader("B", { annotation("乙") })
+    f:drain()
+    b:stopPlugin()
+    eq(f.settings.data.screensaver_type, "cover")
+    eq(f.settings.data.screensaver_dir, "/previous")
+end)
+test("Changing the active random folder retains random mode when yielding ownership", function()
+    local s = settings({ screensaver_type = "cover", screensaver_show_message = true })
+    local p = Policy.new(s)
+    assert(p:apply{ dir = "/liuju" })
+    s.data.screensaver_dir = "/new-folder"
+    eq(p:check(), false)
+    eq(s.data.screensaver_type, "random_image")
+    eq(s.data.screensaver_dir, "/new-folder")
+    eq(s.data.screensaver_show_message, true)
+end)
+test("A failed repair leaves only valid eligible images in the selected pool", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("甲"), annotation("乙") })
+    f:drain()
+    local images, store = f:images(a)
+    local broken = assert(io.open(images[1], "wb"))
+    broken:write("broken PNG")
+    broken:close()
+    local foreign = store.dir .. "/other.png"
+    py_png(foreign, 1072, 1448)
+    local selected = f:select(images[1])
+    eq(selected, store.fallback)
+    f.fail_write = true
+    f:drain()
+    eq(f.settings.data.screensaver_dir, store.dir)
+    eq(io.open(images[1], "rb"), nil)
+    eq(io.open(foreign, "rb"), nil)
+    assert(io.open(store.book_dir .. "/excluded/other.png", "rb")):close()
+    eq(f:select(images[2]), images[2])
+    f.fail_write = false
+    a:onSuspend()
+    a:onResume()
+    f:drain()
+    eq(#f:images(a), 2)
+end)
+test("Existing flat caches migrate into the private pool without redrawing", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("已缓存的摘录") })
+    f:drain()
+    local images, store = f:images(a)
+    local legacy = store.book_dir .. "/" .. images[1]:match("([^/]+)$")
+    assert(os.rename(images[1], legacy))
+    eq(f:images(a)[1], legacy)
+    local writes = f.writes
+    a:onReaderReady()
+    f:drain()
+    eq(f.writes, writes)
+    eq(f:images(a)[1], images[1])
+    eq(io.open(legacy, "rb"), nil)
+end)
+test("Batch generation only writes changed settings and an unchanged wake is idle", function()
+    local f = fixture()
+    local rows = {}
+    for i = 1, 12 do rows[i] = annotation("摘录 " .. i) end
+    local a = f:reader("A", rows)
+    f:drain()
+    eq(#f:images(a), 12)
+    eq(f.flushes, 4, "backup, raw cover, generated cover, random pool")
+    local flushes, reads, writes = f.flushes, f.cover_reads, f.writes
+    eq(f:select(f:images(a)[1]), f:images(a)[1])
+    a:onSuspend()
+    a:onResume()
+    eq(#f.queue, 0)
+    eq(f.flushes, flushes)
+    eq(f.cover_reads, reads)
+    eq(f.writes, writes)
 end)
 test("Poster places excerpts above a lower-left album and white book title on the black footer",function()
     local layout=real_dofile(TEST_ROOT.."/liuju_layout.lua")

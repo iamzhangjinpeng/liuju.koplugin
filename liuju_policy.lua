@@ -9,6 +9,7 @@ local keys = {
     "screensaver_stretch_images", "screensaver_show_message",
     "screensaver_cycle_images_alphabetically", "screensaver_max_files",
 }
+local target_keys = { random_image = "screensaver_dir", document_cover = "screensaver_document_cover" }
 
 function Policy.new(settings)
     return setmetatable({ settings = settings }, Policy)
@@ -26,10 +27,27 @@ function Policy:_matches(lease)
     return true
 end
 
+function Policy:_restore_owned(lease)
+    if type(lease) ~= "table" or lease.version ~= 1
+            or type(lease.backup) ~= "table" or type(lease.applied) ~= "table" then return end
+    local current_type = self.settings:readSetting("screensaver_type")
+    local target_key = target_keys[current_type]
+    local changed_active_target = target_key and self.settings:readSetting(target_key) ~= lease.applied[target_key]
+    for _, key in ipairs(keys) do
+        local applied, saved = lease.applied[key], lease.backup[key]
+        if applied ~= nil and saved and self.settings:readSetting(key) == applied
+                and (key ~= "screensaver_type" or not changed_active_target) then
+            if saved.present then self.settings:saveSetting(key, saved.value)
+            else self.settings:delSetting(key) end
+        end
+    end
+end
+
 function Policy:check()
     if not self:enabled() then return false end
     local lease = self.settings:readSetting(self.LEASE)
     if lease and not self:_matches(lease) then
+        self:_restore_owned(lease)
         self.settings:delSetting(self.LEASE)
         self.settings:saveSetting(self.ENABLED, false)
         self.settings:flush()
@@ -61,8 +79,7 @@ function Policy:apply(target)
         screensaver_max_files = math.max(256, tonumber(target.count) or 0,
             tonumber(lease.backup.screensaver_max_files.value) or 0),
     }
-    -- Save the intended values with the recovery record, then apply them.
-    -- init() also recognizes interrupted leases and yields rather than stealing.
+    if next(lease.applied) and self:_matches{ version = 1, applied = applied } then return true end
     lease.applied = applied
     self.settings:saveSetting(self.LEASE, lease)
     for key, value in pairs(applied) do self.settings:saveSetting(key, value) end
@@ -77,14 +94,8 @@ end
 
 function Policy:restore(disable)
     local lease = self.settings:readSetting(self.LEASE)
-    if self:_matches(lease) and type(lease.backup) == "table" then
-        for _, key in ipairs(keys) do
-            local saved = lease.backup[key]
-            if saved and saved.present then self.settings:saveSetting(key, saved.value)
-            else self.settings:delSetting(key) end
-        end
-        self.settings:flush()
-    end
+    if not lease and not disable then return end
+    self:_restore_owned(lease)
     self.settings:delSetting(self.LEASE)
     if disable then self.settings:saveSetting(self.ENABLED, false) end
     self.settings:flush()
