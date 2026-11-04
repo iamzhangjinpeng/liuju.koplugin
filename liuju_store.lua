@@ -66,7 +66,9 @@ end
 
 function Store.open_index(state_root, book_id)
     assert(book_id:match("^%x+$") and #book_id == 64, "Invalid book ID")
-    return LuaSettings:open(state_root .. "/" .. book_id .. ".lua")
+    local index = LuaSettings:open(state_root .. "/" .. book_id .. ".lua")
+    if type(index.data) ~= "table" then index.data = {} end
+    return index
 end
 
 function Store.new(root, state_root, book_id, width, height)

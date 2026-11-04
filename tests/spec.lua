@@ -7,7 +7,14 @@ local function test(name, fn)
     test_count = test_count + 1
     print("PASS " .. name)
 end
-package.loaded["ffi/sha2"] = { sha256 = function(text) return py_hash(text) end }
+package.loaded["ffi/sha2"] = { sha256 = function(text)
+    if text ~= nil then return py_hash(text) end
+    local chunks = {}
+    return function(chunk)
+        if chunk == nil then return py_hash(table.concat(chunks)) end
+        chunks[#chunks + 1] = chunk
+    end
+end }
 local Core = dofile(TEST_ROOT .. "/liuju_core.lua")
 local Policy = dofile(TEST_ROOT .. "/liuju_policy.lua")
 
@@ -181,16 +188,7 @@ local function fixture()
         ["datastorage"] = {getDataDir=function() return f.root end,getSettingsDir=function() return f.root.."/settings" end},
         ["docsettings"] = {},
         ["device"] = {screen={getWidth=function()return 1072 end,getHeight=function()return 1448 end}},
-        ["util"] = {
-            makePath=function(path) return py_mkdir(path) end,
-            partialMD5=function(path)
-                local file = io.open(path, "rb")
-                if not file then return end
-                local digest = py_hash(file:read("*a"))
-                file:close()
-                return digest
-            end,
-        },
+        ["util"] = {makePath=function(path) return py_mkdir(path) end},
         ["logger"] = {warn=function(...)f.warnings[#f.warnings+1]={...}end},
         ["gettext"] = function(t)return t end,
         ["libs/libkoreader-lfs"] = {
@@ -222,8 +220,8 @@ local function fixture()
         instance:init()
         return instance
     end
-    function f:reader(name, annotations, doc_settings)
-        local path=self.root.."/"..name..".epub"
+    function f:reader(name, annotations, doc_settings, extension)
+        local path=self.root.."/"..name..(extension or ".epub")
         local existing=io.open(path,"rb")
         if existing then existing:close()
         else local h=assert(io.open(path,"wb"));h:write(name);h:close() end
@@ -666,6 +664,100 @@ test("Replacing a book at the same path suppresses its old cache before regenera
     f:drain()
     assert(store.index:readSetting("cover_source") ~= old_cover_source)
     assert(f:images(b)[1] ~= images[1])
+end)
+test("Sync keeps the identity of the open document after its file is replaced", function()
+    local f = fixture()
+    local row = annotation("原书的摘录")
+    local a = f:reader("A", { row })
+    f:drain()
+    local old, writes = f:images(a)[1], f.writes
+    local path = a.ui.document.file
+    local replacement = assert(io.open(path .. ".new", "wb"))
+    replacement:write("new source")
+    replacement:close()
+    assert(os.rename(path .. ".new", path))
+    row.note = "旧阅读界面中的新笔记"
+    a:onAnnotationsModified()
+    a:onReaderReady()
+    f:drain()
+    eq(f.writes, writes)
+    eq(f:select(old), "resources/koreader.png")
+    a:_preview()
+    eq(f.preview, nil)
+    a:onCloseDocument()
+    a:onCloseWidget()
+    local manager = f:manager()
+    eq(f:select(old), "resources/koreader.png")
+    manager:_preview()
+    eq(f.preview, nil)
+    local b = f:reader("A", { annotation("新书的摘录") })
+    f:drain()
+    assert(f:images(b)[1] ~= old)
+end)
+test("Full digest detects equal-stat edits beyond the first read chunk", function()
+    local f = fixture()
+    local path = f.root .. "/A.epub"
+    local file = assert(io.open(path, "wb"))
+    file:write(string.rep("x", 160000))
+    file:close()
+    local a = f:reader("A", { annotation("旧版书籍") })
+    f:drain()
+    local old = f:images(a)[1]
+    f.fixed_path, f.fixed_attrs = path, py_attrs(path, nil, false)
+    file = assert(io.open(path, "r+b"))
+    assert(file:seek("set", 145000))
+    file:write("new content")
+    file:close()
+    eq(f:select(old), "resources/koreader.png")
+    a:_preview()
+    eq(f.preview, nil)
+    a:onCloseDocument()
+    a:onCloseWidget()
+    local manager = f:manager()
+    eq(f:select(old), "resources/koreader.png")
+    manager:_preview()
+    eq(f.preview, nil)
+end)
+test("Sleep falls back safely when the index is malformed or a validator throws", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("有效小票") })
+    f:drain()
+    local images, store = f:images(a)
+    local image = images[1]
+    store.index.data = 1
+    eq(f:select(image), "resources/koreader.png")
+    f:drain()
+    eq(f:select(image), image)
+    local read = store.index.readSetting
+    store.index.readSetting = function() error("index unavailable") end
+    eq(f:select(image), "resources/koreader.png")
+    store.index.readSetting = read
+    a._before_sleep = function() error("source check unavailable") end
+    eq(f:select(image), "resources/koreader.png")
+    a.policy:restore(true)
+    f.settings.data.screensaver_type = "document_cover"
+    f.settings.data.screensaver_document_cover = "/my-wallpaper.png"
+    eq(f:select(), "/my-wallpaper.png")
+end)
+test("PDF skips generation and preview without blocking the next supported book", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("当前小票") })
+    f:drain()
+    local old, writes = f:images(a)[1], f.writes
+    local pdf = f:reader("B", { annotation("PDF 内容") }, nil, ".PDF")
+    f:drain()
+    eq(f.writes, writes)
+    eq(f:select(old), "resources/koreader.png")
+    pdf:_preview()
+    eq(f.preview, nil)
+    assert(f.messages[#f.messages]:find("PDF", 1, true))
+    pdf:onCloseDocument()
+    pdf:onCloseWidget()
+    f:manager()
+    eq(f:select(old), "resources/koreader.png")
+    local c = f:reader("C", { annotation("继续阅读") })
+    f:drain()
+    eq(f:select(f:images(c)[1]), f:images(c)[1])
 end)
 test("Sleep rejects a decodable managed-name card missing from the current book's index", function()
     local f = fixture()

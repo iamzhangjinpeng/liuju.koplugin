@@ -27,6 +27,10 @@ function Policy:_matches(lease)
     return true
 end
 
+function Policy:owns()
+    return self:enabled() and self:_matches(self.settings:readSetting(self.LEASE))
+end
+
 function Policy:_restore_owned(lease)
     if type(lease) ~= "table" or lease.version ~= 1
             or type(lease.backup) ~= "table" or type(lease.applied) ~= "table" then return end

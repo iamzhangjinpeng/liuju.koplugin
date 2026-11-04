@@ -1,7 +1,7 @@
 local Core = {}
 local sha256 = require("ffi/sha2").sha256
 
-Core.VERSION = "0.1.0-rc.7"
+Core.VERSION = "0.1.0-rc.8"
 Core.LAYOUT_VERSION = "album-player-4"
 Core.DEFAULT_LIMIT = 80
 
@@ -113,6 +113,21 @@ end
 
 function Core.hash(value) return sha256(value) end
 function Core.book_id(path) return sha256(path) end
+
+function Core.file_hash(path)
+    local file = io.open(path, "rb")
+    if not file then return end
+    local update = sha256()
+    while true do
+        local chunk, err = file:read(128 * 1024)
+        if not chunk then
+            file:close()
+            if not err then return update() end
+            return
+        end
+        update(chunk)
+    end
+end
 
 function Core.date(value)
     if type(value) ~= "string" then return "" end
