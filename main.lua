@@ -597,8 +597,9 @@ end
 
 function Liuju:_preview()
     if not self.screensaver_supported then notify(_("这台设备的休眠屏幕由 Kindle 系统管理。")); return end
-    local ok, store, allowed, fallback
-    if self:_current() then
+    local current = self:_current()
+    local ok, store, allowed, fallback, has_entries
+    if current then
         if self:_is_pdf() then notify(_("留句不支持 PDF。")); return end
         if not self:_opened_matches() then notify(_("无法核对当前书籍，请重新打开后再试。")); return end
         if not self._pending and self:_annotations_changed() then self:_queue_sync(false, false) end
@@ -606,6 +607,7 @@ function Liuju:_preview()
         ok, job = pcall(self._prepare_job, self, {})
         if ok then
             store, allowed = job.store, {}
+            has_entries = #job.entries > 0
             for _, entry in ipairs(job.entries) do allowed[entry.filename] = true end
             if store.index:readSetting("cover_key") == job.key then fallback = store.fallback end
         end
@@ -618,16 +620,31 @@ function Liuju:_preview()
         ok, store = pcall(Store.new, self.root, self.state_root, last.id, last.width, last.height)
         if ok and store.index:readSetting("cover_source") == cover_source(last) then fallback = store.fallback end
     end
-    if not ok then notify(_("暂时没有可预览的壁纸。")); return end
+    if not ok then
+        notify(current and _("暂时无法确认当前书的小票状态。") or _("暂时没有可预览的壁纸。"))
+        return
+    end
     local images = store:images(Core.limit(G_reader_settings:readSetting(LIMIT)), allowed)
     local path
     while #images > 0 and not path do
         local candidate = table.remove(images, math.random(#images))
         if Store.valid_png(candidate, store.width, store.height) then path = candidate end
     end
-    if not path and fallback and Store.valid_png(fallback, store.width, store.height) then path = fallback end
-    if not path then notify(_("暂时没有可预览的壁纸。")); return end
-    UIManager:show(require("ui/widget/imageviewer"):new{ file = path, fullscreen = true })
+    local title
+    if path then
+        if current then title = _("当前书的小票") end
+    else
+        if current then
+            title = _("当前书暂无小票")
+            if has_entries and (self._pending or self._job) then title = _("当前书的小票生成中") end
+        end
+        if not fallback or not Store.valid_png(fallback, store.width, store.height) then
+            notify(title or _("暂时没有可预览的壁纸。"))
+            return
+        end
+        path = fallback
+    end
+    UIManager:show(require("ui/widget/imageviewer"):new{ file = path, fullscreen = true, title_text = title })
 end
 
 function Liuju:addToMainMenu(items)

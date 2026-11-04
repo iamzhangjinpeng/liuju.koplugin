@@ -2,7 +2,7 @@
 
 把当前阅读书籍中简短的高亮与批注，排成带封面和标注日期的锁屏壁纸。每次 Kindle 休眠时随机展示一张，换书时自动切换图片池。
 
-**当前正式版为 0.1.1。** 面向已越狱并安装 KOReader 的 Kindle，主要支持 EPUB。已在 Kindle Paperwhite 4（KOReader v2026.07.2）通过基础功能测试。
+**当前正式版为 1.0.0。** 面向已越狱并安装 KOReader 的 Kindle，主要支持 EPUB。0.1.1 的壁纸基础功能已在 Kindle Paperwhite 4（KOReader v2026.07.2）通过实机测试。
 
 ![留句壁纸样图](previews/selected-gallery.png)
 
@@ -23,7 +23,7 @@
 
 ## 安装
 
-1. 下载并解压安装包，得到 `liuju.koplugin` 文件夹。[下载 liuju.koplugin-v0.1.1.zip](https://github.com/iamzhangjinpeng/liuju.koplugin/releases/download/v0.1.1/liuju.koplugin-v0.1.1.zip)
+1. 下载并解压安装包，得到 `liuju.koplugin` 文件夹。[下载 liuju.koplugin-v1.0.0.zip](https://github.com/iamzhangjinpeng/liuju.koplugin/releases/download/v1.0.0/liuju.koplugin-v1.0.0.zip)
 2. 完全退出 KOReader，将文件夹复制到 Kindle 的：
 
    ```text
@@ -40,6 +40,8 @@
 
 3. 安全弹出 Kindle，重新启动 KOReader，打开一本书。首次启用默认开启留句屏保。
 4. 在“工具 → 留句”中调整字数上限、更新当前书的小票或预览。阅读时预览以当前书的标注为准。
+
+阅读时点「工具 → 留句 → 预览一张」。有小票时直接预览；生成中或暂无小票时，界面会说明当前状态，并在已有封面壁纸时显示封面。
 
 如果同时使用单向历，请先关闭单向历的“自动配置屏保”，再启用留句。两者设置的是同一套 KOReader 屏保。留句发现用户或其他插件改换屏保后，会让出配置并关闭自身开关；需要重新使用时可在菜单里开启。
 

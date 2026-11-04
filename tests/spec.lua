@@ -125,7 +125,10 @@ local function fixture()
         for i=#f.queue,1,-1 do if f.queue[i] == cb then table.remove(f.queue,i) end end
     end
     function uimanager:show(widget)
-        if widget.file then f.preview = widget.file end
+        if widget.file then
+            f.preview = widget.file
+            f.preview_title = widget.title_text
+        end
         if widget.text then f.messages[#f.messages+1] = widget.text end
     end
     local function textwidget(text, width, size, options)
@@ -963,6 +966,39 @@ test("Character screening handles long quotes and combined notes without a chara
     eq(entries[1].note, "丙\n丁")
     eq(entries[1].count, 4)
 end)
+test("Preview identifies current-book receipts, pending generation, and a cover without receipts", function()
+    local f = fixture()
+    local reader = f:reader("A", { annotation("正在生成的小票") })
+    local menu = {}
+    reader:addToMainMenu(menu)
+    local preview
+    for _, item in ipairs(menu.liuju.sub_item_table) do
+        if item.text == "预览一张" then preview = item.callback end
+    end
+    assert(preview, "preview action is missing")
+
+    preview()
+    eq(f.messages[#f.messages], "当前书的小票生成中")
+    eq(f.preview, nil)
+    assert(f:step() and f:step(), "cover should render before receipts")
+    local _, store = f:images(reader)
+    preview()
+    eq(f.preview, store.fallback)
+    eq(f.preview_title, "当前书的小票生成中")
+
+    f:drain()
+    preview()
+    eq(f.preview, f:images(reader)[1])
+    eq(f.preview_title, "当前书的小票")
+
+    local empty = f:reader("B", { annotation(string.rep("长", 81)) })
+    f:drain()
+    local _, empty_store = f:images(empty)
+    empty:_preview()
+    eq(f.preview, empty_store.fallback)
+    eq(f.preview_title, "当前书暂无小票")
+end)
+
 test("Preview never borrows the last book's images when the current book has no cache", function()
     local f = fixture()
     local a = f:reader("A", { annotation("甲书内容") })
@@ -974,7 +1010,7 @@ test("Preview never borrows the last book's images when the current book has no 
     local b = f:reader("B", { annotation("乙书内容") })
     b:_preview()
     eq(f.preview, nil)
-    assert(f.messages[#f.messages]:find("没有可预览", 1, true))
+    eq(f.messages[#f.messages], "当前书暂无小票")
     b:onCloseDocument()
     b:onCloseWidget()
     f:manager():_preview()
