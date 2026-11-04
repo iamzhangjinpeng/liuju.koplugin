@@ -49,7 +49,7 @@
 
 在书库调低字数上限时，留句会立即筛选最近一本书的小票。旧版缓存如果还没有字数记录，会先显示封面，重新打开书籍时再核对旧图。
 
-## 图片、设置与停用
+## 图片缓存与卸载
 
 ```text
 /mnt/us/koreader/screenshots/liuju/<book-id>/pool/ 每本书的随机小票 PNG
@@ -58,7 +58,23 @@
 
 实际路径以 KOReader 的数据目录为准。同步会清理当前书中失效的小票。误放入 `pool/` 的其他文件会移到同一本书的 `excluded/` 目录。
 
-关闭“启用留句屏保”会停止任务，恢复仍由留句管理的设置，并保留之后的手动改动。正常关书会保留最近一本书的图片池。卸载前建议先关闭该开关，再退出 KOReader 删除插件文件夹。已生成图片可按上述目录另行清理，书籍及原始标注保持完整。
+关闭“启用留句屏保”会停止任务，恢复仍由留句管理的设置，并保留之后的手动改动。正常关书会保留最近一本书的图片池。
+
+### 完整卸载
+
+1. 在 KOReader 打开“工具 → 插件管理 → 用户插件”，长按“留句”，选择“删除插件和设置”（`Delete plugin and settings`）。这一步会恢复仍由留句管理的屏保设置，并删除插件本体和留句的偏好设置。如果留句已在插件管理中停用，可先重新启用并重启 KOReader，再执行删除。[KOReader 插件管理实现](https://github.com/koreader/koreader/blob/master/frontend/pluginloader.lua#L401-L444)
+2. 完全退出 KOReader，再通过 USB 连接 Kindle。删除以下两个留句专用目录，清除已生成的小票、封面和索引。想保留的图片可先复制出来，误放进图片池的文件可能已移到 `excluded/`。
+
+   ```text
+   /mnt/us/koreader/screenshots/liuju/
+   /mnt/us/koreader/settings/liuju/
+   ```
+
+3. 安全弹出 Kindle。再次打开 KOReader 时，可在屏保设置里确认原来的屏保已恢复，或后来手动选择的屏保仍在使用。
+
+如果菜单里没有“删除插件和设置”，先在“工具 → 留句”关闭“启用留句屏保”，让留句恢复屏保设置。完全退出 KOReader 后，手动删除 `/mnt/us/koreader/plugins/liuju.koplugin/` 和上面两个缓存目录。若也要清除留句偏好，可先备份 `/mnt/us/koreader/settings.reader.lua`，再用文本编辑器删除其中的 `liuju_enabled`、`liuju_character_limit`、`liuju_last_book` 和残留的 `liuju_screensaver_lease` 条目。如果 `plugins_disabled` 里有 `liuju` 条目，也可以一并移除。保留全局设置文件和其他条目。
+
+书籍、阅读进度、原始高亮和批注都保留。只删除上面列出的留句目录即可，书籍旁的 `.sdr` 目录用于保存阅读数据。
 
 缺少日期的标注隐藏日期；带 HTML/Markdown 格式的导入笔记在首版跳过，避免把格式标记当成正文。普通高亮和纯文本笔记是首版支持对象。
 
