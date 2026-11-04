@@ -223,6 +223,7 @@ local function fixture()
             end,
             symlinkattributes=function(path,field)return py_attrs(path,field,true)end,
             dir=function(path)
+                if path == f.unreadable_dir then error("cannot list cache directory") end
                 local names=py_list(path); local i=0
                 return function()i=i+1;return names[i]end
             end,
@@ -997,6 +998,25 @@ test("Preview identifies current-book receipts, pending generation, and a cover 
     empty:_preview()
     eq(f.preview, empty_store.fallback)
     eq(f.preview_title, "当前书暂无小票")
+end)
+
+test("A temporarily unreadable cache reports an unknown preview state and can be retried", function()
+    local f = fixture()
+    local reader = f:reader("A", { annotation("可预览的小票") })
+    f:drain()
+    local images, store = f:images(reader)
+    f.unreadable_dir = store.dir
+
+    reader:_preview()
+    eq(f.preview, nil)
+    eq(f.messages[#f.messages], "暂时无法确认当前书的小票状态。")
+    f:manager():_preview()
+    eq(f.preview, nil)
+    eq(f.messages[#f.messages], "暂时没有可预览的壁纸。")
+
+    f.unreadable_dir = nil
+    f:manager():_preview()
+    eq(f.preview, images[1])
 end)
 
 test("Preview never borrows the last book's images when the current book has no cache", function()

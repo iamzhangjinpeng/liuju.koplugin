@@ -620,11 +620,15 @@ function Liuju:_preview()
         ok, store = pcall(Store.new, self.root, self.state_root, last.id, last.width, last.height)
         if ok and store.index:readSetting("cover_source") == cover_source(last) then fallback = store.fallback end
     end
+    local images
+    if ok then
+        ok, images = pcall(store.images, store, Core.limit(G_reader_settings:readSetting(LIMIT)), allowed)
+        if not ok then logger.warn("留句: 无法读取小票目录", tostring(images)) end
+    end
     if not ok then
         notify(current and _("暂时无法确认当前书的小票状态。") or _("暂时没有可预览的壁纸。"))
         return
     end
-    local images = store:images(Core.limit(G_reader_settings:readSetting(LIMIT)), allowed)
     local path
     while #images > 0 and not path do
         local candidate = table.remove(images, math.random(#images))
