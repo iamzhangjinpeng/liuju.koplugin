@@ -32,11 +32,28 @@ def run():
             Image.new("L", (int(width), int(height)), 255).save(path, format="PNG")
             return True
 
+        def decode_png(path):
+            try:
+                with Image.open(path) as image:
+                    image.load()
+                    return image.size
+            except OSError:
+                return None, None
+
+        def corrupt_png_data(path):
+            path = Path(path)
+            data = bytearray(path.read_bytes())
+            assert data[37:41] == b"IDAT"
+            data[41] ^= 255
+            path.write_bytes(data)
+
         lua.globals().py_hash = lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest()
         lua.globals().py_attrs = attrs
         lua.globals().py_list = lambda path: lua.table_from(os.listdir(path))
         lua.globals().py_mkdir = lambda path: Path(path).mkdir(parents=True, exist_ok=True)
         lua.globals().py_png = write_png
+        lua.globals().py_decode_png = decode_png
+        lua.globals().py_corrupt_png_data = corrupt_png_data
         lua.globals().TEST_ROOT = str(ROOT)
         lua.globals().SCRATCH = scratch
         lua.execute((ROOT / "tests" / "spec.lua").read_text())

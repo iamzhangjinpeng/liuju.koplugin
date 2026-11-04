@@ -89,7 +89,7 @@ local function fixture()
     fixture_id = fixture_id + 1
     local f = { root = SCRATCH .. "/case-" .. fixture_id, queue = {}, indices = {}, writes = 0,
         texts = {}, painted_texts = {}, rectangles = {}, frees = 0,
-        live_widgets = 0, live_covers = 0, cover_reads = 0, flushes = 0, messages = {}, warnings = {} }
+        live_widgets = 0, live_covers = 0, live_images = 0, cover_reads = 0, flushes = 0, messages = {}, warnings = {} }
     py_mkdir(f.root)
     local s = settings()
     G_reader_settings = s
@@ -100,7 +100,10 @@ local function fixture()
     function uimanager:unschedule(cb)
         for i=#f.queue,1,-1 do if f.queue[i] == cb then table.remove(f.queue,i) end end
     end
-    function uimanager:show(widget) f.messages[#f.messages+1] = widget.text end
+    function uimanager:show(widget)
+        if widget.file then f.preview = widget.file end
+        if widget.text then f.messages[#f.messages+1] = widget.text end
+    end
     local function textwidget(text, width, size, options)
         options = options or {}
         f.live_widgets = f.live_widgets + 1
@@ -145,13 +148,31 @@ local function fixture()
         ["ui/widget/container/widgetcontainer"] = {extend=function(_,t) return t end},
         ["ui/uimanager"] = uimanager,
         ["ui/screensaver"] = { setup = function(screensaver, event)
-            screensaver.screensaver_type = s.data[(event and event .. "_" or "") .. "screensaver_type"]
+            local kind = s.data[(event and event .. "_" or "") .. "screensaver_type"]
                 or s.data.screensaver_type
-            screensaver.image_file = screensaver.screensaver_type == "random_image" and f.next_image
+            screensaver.screensaver_type = kind == "document_cover" and "cover" or kind
+            screensaver.image_file = kind == "random_image" and f.next_image
                 or s.data.screensaver_document_cover
         end },
+        ["ui/renderimage"] = { renderImageFile = function(_, path)
+            local width, height = py_decode_png(path)
+            if not width then return end
+            f.live_images = f.live_images + 1
+            local freed = false
+            return {
+                getWidth = function() return width end,
+                getHeight = function() return height end,
+                free = function()
+                    assert(not freed, "decoded image freed twice")
+                    freed = true
+                    f.live_images = f.live_images - 1
+                end,
+            }
+        end },
+        ["ui/widget/imageviewer"] = {new=function(_,t) return t end},
         ["ui/widget/infomessage"] = {new=function(_,t)return t end},
         ["datastorage"] = {getDataDir=function() return f.root end,getSettingsDir=function() return f.root.."/settings" end},
+        ["docsettings"] = {},
         ["device"] = {screen={getWidth=function()return 1072 end,getHeight=function()return 1448 end}},
         ["util"] = {makePath=function(path) return py_mkdir(path) end},
         ["logger"] = {warn=function(...)f.warnings[#f.warnings+1]={...}end},
@@ -176,6 +197,12 @@ local function fixture()
     end
     local plugin = assert(loadfile(TEST_ROOT.."/main.lua"))()
     dofile = real_dofile
+    function f:manager()
+        local ui = {menu = {registerToMainMenu = function() end}}
+        local instance = setmetatable({ui = ui}, {__index = plugin})
+        instance:init()
+        return instance
+    end
     function f:reader(name, annotations)
         local path=self.root.."/"..name..".epub"
         local existing=io.open(path,"rb")
@@ -204,6 +231,7 @@ local function fixture()
         self.next_image = path
         local screensaver = modules["ui/screensaver"]
         screensaver:setup(event)
+        if screensaver.image then screensaver.image:free(); screensaver.image = nil end
         return screensaver.image_file, screensaver.screensaver_type
     end
     function f:step()
@@ -216,6 +244,7 @@ local function fixture()
         while self:step() do n=n+1;assert(n<2000,"scheduler did not become idle") end
         eq(self.live_widgets,0,"all text resources released")
         eq(self.live_covers,0,"all cover resources released")
+        eq(self.live_images,0,"all decoded images released")
     end
     function f:images(instance)
         local Store = real_dofile(TEST_ROOT.."/liuju_store.lua")
@@ -361,7 +390,7 @@ test("Sleep detects silent edits before choosing an image and resumes the pendin
     eq(f:select(old, "reboot"), old, "event-specific setup bypasses the ordinary sleep hook")
     eq(#f.queue, 0)
     local image, kind = f:select(old)
-    eq(kind, "document_cover")
+    eq(kind, "cover")
     assert(image:match("%-cover%.png$"))
     a:onSuspend()
     eq(#f.queue, 0)
@@ -371,7 +400,7 @@ test("Sleep detects silent edits before choosing an image and resumes the pendin
     assert(updated ~= old)
     row.text = "编辑后的摘录"
     image, kind = f:select(updated)
-    eq(kind, "document_cover")
+    eq(kind, "cover")
     f:drain()
     assert(f:images(a)[1] ~= updated)
 end)
@@ -461,6 +490,116 @@ test("Batch generation only writes changed settings and an unchanged wake is idl
     eq(f.flushes, flushes)
     eq(f.cover_reads, reads)
     eq(f.writes, writes)
+end)
+test("Closing after a silent edit removes the stale card while keeping other eligible cards", function()
+    local f = fixture()
+    local edited = annotation("这段摘录", "旧笔记")
+    local a = f:reader("A", { edited, annotation("仍可展示") })
+    f:drain()
+    local before = f:images(a)
+    local writes = f.writes
+    edited.note = "新笔记"
+    a:onCloseDocument()
+    a:onCloseWidget()
+    f:manager()
+    eq(#f.queue, 0)
+    eq(f.writes, writes, "closing never draws new images")
+    local after = f:images(a)
+    eq(#after, 1)
+    assert(after[1] == before[1] or after[1] == before[2])
+    eq(f:select(after[1]), after[1])
+    local stale = before[1] == after[1] and before[2] or before[1]
+    eq(io.open(stale, "rb"), nil)
+end)
+test("Closing a freshly reopened book restores its verified random pool without drawing", function()
+    local f = fixture()
+    local rows = { annotation("已缓存的摘录") }
+    local a = f:reader("A", rows)
+    f:drain()
+    local old = f:images(a)[1]
+    local reads, writes = f.cover_reads, f.writes
+    a:onCloseDocument()
+    a:onCloseWidget()
+    f:manager()
+    local reopened = f:reader("A", rows)
+    eq(f.settings.data.screensaver_type, "document_cover")
+    reopened:onCloseDocument()
+    reopened:onCloseWidget()
+    f:manager()
+    eq(#f.queue, 0)
+    eq(f.settings.data.screensaver_type, "random_image")
+    eq(f:select(old), old)
+    eq(f.cover_reads, reads)
+    eq(f.writes, writes)
+end)
+test("Lowering the limit in the library filters both the screensaver pool and preview", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("短句"), annotation("原文", "加上笔记超限") })
+    f:drain()
+    eq(#f:images(a), 2)
+    a:onCloseDocument()
+    a:onCloseWidget()
+    local manager = f:manager()
+    manager:_set_limit(2)
+    local images, store = f:images(a)
+    eq(#images, 1)
+    eq(f.settings.data.screensaver_dir, store.dir)
+    manager:_preview()
+    eq(f.preview, images[1])
+    manager:_set_limit(1)
+    eq(#f:images(a), 0)
+    eq(f.settings.data.screensaver_type, "document_cover")
+    manager:_preview()
+    eq(f.preview, store.fallback)
+end)
+test("After a lower limit, legacy cards wait for the next verified open", function()
+    local f = fixture()
+    local rows = { annotation("旧图") }
+    local a = f:reader("A", rows)
+    f:drain()
+    local images, store = f:images(a)
+    store.index:delSetting("counts")
+    a:onCloseDocument()
+    a:onCloseWidget()
+    local manager = f:manager()
+    manager:_set_limit(2)
+    eq(f.settings.data.screensaver_type, "document_cover")
+    manager:_preview()
+    eq(f.preview, store.fallback)
+    assert(io.open(images[1], "rb")):close()
+    local reopened = f:reader("A", rows)
+    f:drain()
+    eq(f:images(reopened)[1], images[1])
+    eq(f.settings.data.screensaver_type, "random_image")
+end)
+test("Corrupt PNG image data is rejected on selection and repaired on ordinary sync", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("原文") })
+    f:drain()
+    local images, store = f:images(a)
+    local path = images[1]
+    py_corrupt_png_data(path)
+    eq(f:select(path), store.fallback)
+    eq(io.open(path, "rb"), nil)
+    f:drain()
+    eq(f:select(path), path)
+    local writes = f.writes
+    py_corrupt_png_data(path)
+    a:onReaderReady()
+    f:drain()
+    eq(f.writes, writes + 1)
+    eq(f:select(path), path)
+end)
+test("A damaged generated cover is replaced when a book has no eligible cards", function()
+    local f = fixture()
+    local a = f:reader("A", {})
+    f:drain()
+    local cover = f.settings.data.screensaver_document_cover
+    py_corrupt_png_data(cover)
+    eq(f:select(), "resources/koreader.png")
+    f:drain()
+    eq(f:select(), cover)
+    eq(f.settings.data.screensaver_type, "document_cover")
 end)
 test("Poster places excerpts above a lower-left album and white book title on the black footer",function()
     local layout=real_dofile(TEST_ROOT.."/liuju_layout.lua")

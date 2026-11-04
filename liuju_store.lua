@@ -1,6 +1,7 @@
 local lfs = require("libs/libkoreader-lfs")
 local util = require("util")
 local LuaSettings = require("luasettings")
+local RenderImage = require("ui/renderimage")
 local Store = {}
 Store.__index = Store
 
@@ -34,18 +35,30 @@ local function uint32(s)
     local a,b,c,d = s:byte(1,4)
     return ((a * 256 + b) * 256 + c) * 256 + d
 end
-function Store.valid_png(path, w, h)
+function Store.decode_png(path, w, h)
     local f = io.open(path, "rb")
-    if not f then return false end
+    if not f then return end
     local head = f:read(24)
     local size = f:seek("end")
     local tail
     if size and size >= 45 then f:seek("end", -12); tail = f:read(12) end
     f:close()
-    return head and head:sub(1,8) == "\137PNG\r\n\26\n"
+    local valid = head and head:sub(1,8) == "\137PNG\r\n\26\n"
         and head:sub(13,16) == "IHDR"
         and uint32(head:sub(17,20)) == w and uint32(head:sub(21,24)) == h
         and tail == "\0\0\0\0IEND\174\66\96\130"
+    if not valid then return end
+    local ok, image = pcall(RenderImage.renderImageFile, RenderImage, path)
+    if not ok then return end
+    if image and image:getWidth() == w and image:getHeight() == h then return image end
+    if image then image:free() end
+end
+
+function Store.valid_png(path, w, h)
+    local image = Store.decode_png(path, w, h)
+    if not image then return false end
+    image:free()
+    return true
 end
 
 function Store.new(root, state_root, book_id, width, height)
@@ -60,13 +73,29 @@ function Store.new(root, state_root, book_id, width, height)
     return setmetatable({
         dir = dir, book_dir = book_dir, state_root = state_root, book_id = book_id, width = width, height = height,
         index = index, skipped = index:readSetting("skipped") or {},
+        counts = index:readSetting("counts"),
         fallback = state_root .. "/" .. book_id .. "-cover.png",
     }, Store)
 end
 
-function Store.valid_candidate(dir, path, width, height)
+local function is_candidate(dir, path)
     return type(path) == "string" and path:sub(1, #dir + 1) == dir .. "/" and managed(path:sub(#dir + 2))
-        and mode(path) == "file" and Store.valid_png(path, width, height)
+        and mode(path) == "file"
+end
+
+function Store.decode_candidate(dir, path, width, height)
+    if is_candidate(dir, path) then return Store.decode_png(path, width, height) end
+end
+
+function Store.discard_candidate(dir, path)
+    if is_candidate(dir, path) then remove(path) end
+end
+
+local function same_counts(old, new)
+    if type(old) ~= "table" then return false end
+    for name, count in pairs(old) do if new[name] ~= count then return false end end
+    for name, count in pairs(new) do if old[name] ~= count then return false end end
+    return true
 end
 
 function Store:_exclude(path, name)
@@ -82,16 +111,16 @@ function Store:_exclude(path, name)
 end
 
 function Store:reconcile(entries, force)
-    local wanted, skipped, available = {}, {}, {}
+    local counts, skipped, available = {}, {}, {}
     for _, item in ipairs(entries) do
-        wanted[item.filename] = true
+        counts[item.filename] = item.count
         if not force then skipped[item.filename] = self.skipped[item.filename] end
     end
     for _, name in ipairs(list(self.dir)) do
         local path = self.dir .. "/" .. name
         local kind = mode(path)
         if kind == "file" and managed(name) then
-            if wanted[name] and Store.valid_png(path, self.width, self.height) then
+            if counts[name] and Store.valid_png(path, self.width, self.height) then
                 available[name] = true
             else
                 remove(path)
@@ -104,7 +133,7 @@ function Store:reconcile(entries, force)
     for _, name in ipairs(list(self.book_dir)) do
         local path = self.book_dir .. "/" .. name
         if managed(name) and mode(path) == "file" then
-            if wanted[name] and not available[name] and Store.valid_png(path, self.width, self.height) then
+            if counts[name] and not available[name] and Store.valid_png(path, self.width, self.height) then
                 local ok, err = os.rename(path, self.dir .. "/" .. name)
                 assert(ok, "Cannot migrate cached wallpaper: " .. tostring(err))
                 available[name] = true
@@ -114,7 +143,31 @@ function Store:reconcile(entries, force)
         end
     end
     self.skipped = skipped
+    if not same_counts(self.counts, counts) then
+        self.counts = counts
+        self.index:saveSetting("counts", counts)
+        self:save_index()
+    end
     return available
+end
+
+function Store:filter_limit(limit)
+    if type(self.counts) ~= "table" then
+        -- Older caches lack counts. Keep their files for the next verified open.
+        if self.counts ~= false then
+            self.counts = false
+            self.index:saveSetting("counts", false)
+            self.index:flush()
+        end
+        return {}, 0
+    end
+    local entries = {}
+    for name, count in pairs(self.counts) do
+        if type(count) == "number" and count <= limit then
+            entries[#entries + 1] = { filename = name, count = count }
+        end
+    end
+    return self:reconcile(entries, false), #entries
 end
 
 function Store:save_index()
@@ -144,12 +197,17 @@ function Store:write(renderer, book, entry)
     return true
 end
 
-function Store:images()
+function Store:images(limit)
     local files = {}
+    if self.counts == false then return files end
     for _, dir in ipairs({ self.dir, self.book_dir }) do
         for _, name in ipairs(list(dir)) do
             local path = dir .. "/" .. name
-            if Store.valid_candidate(dir, path, self.width, self.height) then files[#files + 1] = path end
+            local count = type(self.counts) == "table" and self.counts[name]
+            if (self.counts == nil or (type(count) == "number" and count <= (limit or math.huge)))
+                    and is_candidate(dir, path) then
+                files[#files + 1] = path
+            end
         end
         if #files > 0 then break end
     end
