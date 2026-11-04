@@ -28,7 +28,8 @@ function Policy:_matches(lease)
 end
 
 function Policy:owns()
-    return self:enabled() and self:_matches(self.settings:readSetting(self.LEASE))
+    local lease = self.settings:readSetting(self.LEASE)
+    return self:enabled() and self:_matches(lease) and next(lease.applied) ~= nil
 end
 
 function Policy:_restore_owned(lease)

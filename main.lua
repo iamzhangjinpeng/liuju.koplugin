@@ -37,7 +37,7 @@ end
 local function source_matches(last, stat_only)
     return type(last) == "table" and type(last.file) == "string"
         and not is_pdf(last.file)
-        and type(last.id) == "string" and #last.id == 64 and last.id:match("^%x+$")
+        and type(last.id) == "string" and last.id == Core.book_id(last.file)
         and type(last.source) == "string" and last.source ~= "" and fingerprint(last.file) == last.source
         and type(last.full_digest) == "string" and #last.full_digest == 64
         and (stat_only or (Core.file_hash(last.file) == last.full_digest and fingerprint(last.file) == last.source))
@@ -64,6 +64,19 @@ local function show_default(screensaver)
     screensaver.screensaver_type = "cover"
 end
 
+local function setup_default(setup, screensaver, event, ...)
+    local kind = G_reader_settings:readSetting("screensaver_type")
+    local image = G_reader_settings:readSetting("screensaver_document_cover")
+    G_reader_settings:saveSetting("screensaver_type", "document_cover")
+    G_reader_settings:saveSetting("screensaver_document_cover", DEFAULT_IMAGE)
+    local ok, result = pcall(setup, screensaver, event, ...)
+    G_reader_settings:saveSetting("screensaver_type", kind)
+    G_reader_settings:saveSetting("screensaver_document_cover", image)
+    if not ok then error(result, 0) end
+    show_default(screensaver)
+    return result
+end
+
 -- Kindle selects the wallpaper before dispatching Suspend. Check for changes
 -- in the ordinary sleep path before KOReader reads its screensaver settings.
 local function install_screensaver_hook()
@@ -72,15 +85,14 @@ local function install_screensaver_hook()
     function Screensaver:setup(event, ...)
         local plugin = not event and active_instance
         if not plugin then return setup(self, event, ...) end
-        local ok, dir, last = pcall(plugin._before_sleep, plugin)
+        local ok, dir, last, fallback = pcall(plugin._before_sleep, plugin)
         if not ok then
             logger.warn("留句: 无法检查屏保状态", tostring(dir))
-            local result = setup(self, event, ...)
-            if plugin.policy:owns() then show_default(self) end
-            return result
+            fallback = plugin.policy:owns()
         end
+        if fallback then return setup_default(setup, self, event, ...) end
         local result = setup(self, event, ...)
-        if last and (self.screensaver_type == "random_image" or self.screensaver_type == "cover") then
+        if ok and last and (self.screensaver_type == "random_image" or self.screensaver_type == "cover") then
             local checked, err = pcall(plugin._validate_selection, plugin, self, dir, last)
             if not checked then
                 logger.warn("留句: 无法检查屏保图片", tostring(err))
@@ -99,12 +111,13 @@ function Liuju:init()
     self._stopped, self._suspended = false, false
     self._generation = 0
     self.policy = Policy.new(G_reader_settings)
+    self.screensaver_supported = not Device.supportsScreensaver or Device:supportsScreensaver()
     self.renderer = Renderer.new(Core, Layout, Draw)
     self.root = DataStorage:getDataDir() .. "/screenshots/liuju"
     self.state_root = DataStorage:getSettingsDir() .. "/liuju"
     self.empty_dir = self.root .. "/empty"
     self.ui.menu:registerToMainMenu(self)
-    if self.policy:enabled() then self.policy:check()
+    if self.screensaver_supported and self.policy:enabled() then self.policy:check()
     else self.policy:restore(false) end
     -- ReaderReady handles normal opening. This path handles re-enabling a
     -- plugin while a reader is already initialized.
@@ -212,14 +225,23 @@ function Liuju:_safeguard()
 end
 
 function Liuju:_queue_sync(force, show_result)
-    if not self:_current() or not self.policy:check() then return end
+    if not self.screensaver_supported or not self:_current() or not self.policy:check() then return end
     local previous = self._pending or self._job or {}
     self:_cancel_job()
     self._retry_sync = false
+    if show_result and not self:_is_pdf() and not self:_opened_matches() then
+        notify(_("无法核对当前书籍，请重新打开后再试。"))
+        return true
+    end
     local ok, ready = pcall(self._safeguard, self)
     if not ok then
         logger.warn("留句: 暂存屏保失败", tostring(ready))
+        self._retry_sync = self:_opened_matches(true)
         if self.policy:owns() then pcall(self.policy.apply, self.policy, { dir = self.empty_dir, image = DEFAULT_IMAGE }) end
+        if show_result then notify(_("留句暂时无法更新，请稍后重试。")) end
+    elseif show_result and not ready and not self:_is_pdf() then
+        if self:_excluded() then notify(_("这本书已设为不显示在休眠屏幕。"))
+        else notify(_("无法核对当前书籍，请重新打开后再试。")) end
     end
     if ok and ready then
         self._pending = { force = force or previous.force, show_result = show_result or previous.show_result }
@@ -259,11 +281,10 @@ function Liuju:_annotations_changed()
 end
 
 function Liuju:_before_sleep()
-    if not self.policy:check() or not G_reader_settings:readSetting(Policy.LEASE) then return end
+    if not self.screensaver_supported or not self.policy:check() or not self.policy:owns() then return end
     local current = self:_current()
     if current and (self:_is_pdf() or not self:_opened_matches(true)) then
-        self.policy:apply{ dir = self.empty_dir, image = DEFAULT_IMAGE }
-        return
+        return nil, nil, true
     end
     local last = G_reader_settings:readSetting(LAST_BOOK)
     local excluded = current and self:_excluded()
@@ -271,21 +292,25 @@ function Liuju:_before_sleep()
         self:_queue_sync(false, false)
         last = G_reader_settings:readSetting(LAST_BOOK)
     end
-    if excluded or not source_matches(last) or last.excluded
+    if excluded or type(last) ~= "table" or last.excluded
             or (current and (last.file ~= current or cover_source(last) ~= cover_source(self._opened))) then
-        self.policy:apply{ dir = self.empty_dir, image = DEFAULT_IMAGE }
-        return
+        return nil, nil, true
     end
+    if G_reader_settings:readSetting("screensaver_type") == "document_cover"
+            and G_reader_settings:readSetting("screensaver_document_cover") == DEFAULT_IMAGE then return end
+    if not source_matches(last) then return nil, nil, true end
     if current and not self._pending and self:_annotations_changed() then self:_queue_sync(false, false) end
     local kind = G_reader_settings:readSetting("screensaver_type")
     if kind == "random_image" then
         local dir = G_reader_settings:readSetting("screensaver_dir")
         local book_dir = self.root .. "/" .. last.id
         if dir == book_dir .. "/pool" or dir == book_dir then return dir, last end
-    elseif kind == "document_cover" and G_reader_settings:readSetting("screensaver_document_cover")
-            == self.state_root .. "/" .. last.id .. "-cover.png" then
-        return nil, last
+    elseif kind == "document_cover" then
+        local path = G_reader_settings:readSetting("screensaver_document_cover")
+        if path == self.state_root .. "/" .. last.id .. "-cover.png" then return nil, last end
+        if path == last.file or path == DEFAULT_IMAGE then return end
     end
+    return nil, nil, true
 end
 
 function Liuju:_validate_selection(screensaver, dir, last)
@@ -494,6 +519,7 @@ function Liuju:_step(job)
 end
 
 function Liuju:onReaderReady()
+    if not self.screensaver_supported then return end
     local ok, err = pcall(self._bind_document, self)
     if not ok then logger.warn("留句: 无法确认已打开书籍的文件身份", tostring(err)) end
     self:_queue_sync(false, false)
@@ -505,7 +531,7 @@ function Liuju:onCloseDocument()
     local last = G_reader_settings:readSetting(LAST_BOOK)
     local exclusion_changed = current and type(last) == "table" and last.file == current
         and last.excluded ~= self:_excluded()
-    if current and (exclusion_changed or self._pending
+    if self.screensaver_supported and current and (exclusion_changed or self._pending
             or (self._job and self._job.index == 0) or self:_annotations_changed())
             and self.policy:check() then
         local ok, err = pcall(function()
@@ -547,7 +573,7 @@ end
 function Liuju:_restrict_last_pool(limit)
     local last = G_reader_settings:readSetting(LAST_BOOK)
     if not source_matches(last) or last.excluded then return end
-    local owns_screen = self.policy:check() and G_reader_settings:readSetting(Policy.LEASE)
+    local owns_screen = self.policy:check() and self.policy:owns()
     if owns_screen then
         self.policy:apply{ dir = self.empty_dir, image = self:_fallback(last) }
     end
@@ -570,6 +596,7 @@ function Liuju:_set_limit(value)
 end
 
 function Liuju:_preview()
+    if not self.screensaver_supported then notify(_("这台设备的休眠屏幕由 Kindle 系统管理。")); return end
     local ok, store, allowed, fallback
     if self:_current() then
         if self:_is_pdf() then notify(_("留句不支持 PDF。")); return end
@@ -609,7 +636,8 @@ function Liuju:addToMainMenu(items)
         sub_item_table = {
             {
                 text = _("启用留句屏保"),
-                checked_func = function() return self.policy:enabled() end,
+                checked_func = function() return self.screensaver_supported and self.policy:enabled() end,
+                enabled_func = function() return self.screensaver_supported end,
                 callback = function()
                     if self.policy:enabled() then
                         self:_cancel_job()
@@ -636,7 +664,9 @@ function Liuju:addToMainMenu(items)
             },
             {
                 text = _("更新当前书的小票"),
-                enabled_func = function() return self:_current() and not self:_is_pdf() and self.policy:enabled() end,
+                enabled_func = function()
+                    return self.screensaver_supported and self:_current() and not self:_is_pdf() and self.policy:enabled()
+                end,
                 callback = function() self:_queue_sync(true, true) end,
             },
             { text = _("预览一张"), callback = function() self:_preview() end },

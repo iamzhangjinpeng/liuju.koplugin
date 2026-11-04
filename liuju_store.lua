@@ -79,9 +79,10 @@ function Store.new(root, state_root, book_id, width, height)
     local dir = book_dir .. "/pool"
     directory(book_dir)
     directory(dir)
+    local skipped = index:readSetting("skipped")
     return setmetatable({
         dir = dir, book_dir = book_dir, state_root = state_root, book_id = book_id, width = width, height = height,
-        index = index, skipped = index:readSetting("skipped") or {},
+        index = index, skipped = type(skipped) == "table" and skipped or {},
         counts = index:readSetting("counts"),
         fallback = state_root .. "/" .. book_id .. "-cover.png",
     }, Store)
@@ -92,11 +93,15 @@ local function is_candidate(dir, path)
         and mode(path) == "file"
 end
 
+local function indexed_count(counts, name)
+    local count = type(counts) == "table" and counts[name]
+    if type(count) == "number" and count > 0 and count <= 200 and count % 1 == 0 then return count end
+end
+
 function Store.indexed_candidate(index, dir, path, limit)
     if not is_candidate(dir, path) then return false end
-    local counts = index:readSetting("counts")
-    local count = type(counts) == "table" and counts[path:sub(#dir + 2)]
-    return type(count) == "number" and count > 0 and count <= limit
+    local count = indexed_count(index:readSetting("counts"), path:sub(#dir + 2))
+    return count ~= nil and count <= limit
 end
 
 function Store.decode_candidate(dir, path, width, height)
@@ -146,7 +151,7 @@ function Store:reconcile(entries, force)
         if kind == "file" and managed(name) then
             if counts[name] and valid_png_header(path, self.width, self.height) then
                 available[name] = true
-            elseif not counts[name] and type(self.counts) == "table" and not self.counts[name] then
+            elseif not counts[name] and not indexed_count(self.counts, name) then
                 self:_exclude(path, name)
             else
                 remove(path)
@@ -163,8 +168,10 @@ function Store:reconcile(entries, force)
                 local ok, err = os.rename(path, self.dir .. "/" .. name)
                 assert(ok, "Cannot migrate cached wallpaper: " .. tostring(err))
                 available[name] = true
-            else
+            elseif counts[name] or indexed_count(self.counts, name) then
                 remove(path)
+            else
+                self:_exclude(path, name)
             end
         end
     end
@@ -188,8 +195,9 @@ function Store:filter_limit(limit)
         return {}, 0
     end
     local entries = {}
-    for name, count in pairs(self.counts) do
-        if type(count) == "number" and count <= limit then
+    for name in pairs(self.counts) do
+        local count = indexed_count(self.counts, name)
+        if count and count <= limit then
             entries[#entries + 1] = { filename = name, count = count }
         end
     end
@@ -225,13 +233,12 @@ end
 
 function Store:images(limit, allowed)
     local files = {}
-    if not allowed and self.counts == false then return files end
+    if not allowed and type(self.counts) ~= "table" then return files end
     for _, dir in ipairs({ self.dir, self.book_dir }) do
         for _, name in ipairs(list(dir)) do
             local path = dir .. "/" .. name
-            local count = type(self.counts) == "table" and self.counts[name]
-            local matches = allowed and allowed[name] or (not allowed
-                and (self.counts == nil or (type(count) == "number" and count <= (limit or math.huge))))
+            local count = indexed_count(self.counts, name)
+            local matches = allowed and allowed[name] or (not allowed and count and count <= (limit or math.huge))
             if matches and is_candidate(dir, path) then
                 files[#files + 1] = path
             end

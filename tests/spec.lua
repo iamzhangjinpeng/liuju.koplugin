@@ -187,7 +187,10 @@ local function fixture()
         ["ui/widget/infomessage"] = {new=function(_,t)return t end},
         ["datastorage"] = {getDataDir=function() return f.root end,getSettingsDir=function() return f.root.."/settings" end},
         ["docsettings"] = {},
-        ["device"] = {screen={getWidth=function()return 1072 end,getHeight=function()return 1448 end}},
+        ["device"] = {
+            supportsScreensaver = function() return not f.native_sleep_only end,
+            screen={getWidth=function()return 1072 end,getHeight=function()return 1448 end},
+        },
         ["util"] = {makePath=function(path) return py_mkdir(path) end},
         ["logger"] = {warn=function(...)f.warnings[#f.warnings+1]={...}end},
         ["gettext"] = function(t)return t end,
@@ -679,6 +682,8 @@ test("Sync keeps the identity of the open document after its file is replaced", 
     row.note = "旧阅读界面中的新笔记"
     a:onAnnotationsModified()
     a:onReaderReady()
+    a:_queue_sync(true, true)
+    assert(f.messages[#f.messages]:find("重新打开", 1, true))
     f:drain()
     eq(f.writes, writes)
     eq(f:select(old), "resources/koreader.png")
@@ -708,6 +713,11 @@ test("Full digest detects equal-stat edits beyond the first read chunk", functio
     assert(file:seek("set", 145000))
     file:write("new content")
     file:close()
+    local writes = f.writes
+    a:_queue_sync(true, true)
+    f:drain()
+    assert(f.messages[#f.messages]:find("重新打开", 1, true))
+    eq(f.writes, writes)
     eq(f:select(old), "resources/koreader.png")
     a:_preview()
     eq(f.preview, nil)
@@ -718,15 +728,94 @@ test("Full digest detects equal-stat edits beyond the first read chunk", functio
     manager:_preview()
     eq(f.preview, nil)
 end)
+test("Sleep fallback leaves the random pool in place for the next successful verification", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("待核对") })
+    f:drain()
+    local path = a.ui.document.file
+    local image = f:images(a)[1]
+    local dir = f.settings.data.screensaver_dir
+    local flushes = f.flushes
+    f.fixed_path, f.fixed_attrs = path, py_attrs(path, nil, false)
+    local file = assert(io.open(path, "wb"))
+    file:write("B"); file:close()
+    eq(f:select(image), "resources/koreader.png")
+    eq(f.settings.data.screensaver_type, "random_image")
+    eq(f.settings.data.screensaver_dir, dir)
+    eq(f.flushes, flushes)
+    file = assert(io.open(path, "wb"))
+    file:write("A"); file:close()
+    eq(f:select(image), image)
+end)
+test("An owned but mismatched sleep target cannot borrow another book's image or cover", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("甲书") })
+    f:drain()
+    local images, store = f:images(a)
+    local b = f:reader("B", { annotation("乙书") })
+    f:drain()
+    b:onCloseDocument()
+    b:onCloseWidget()
+    local manager = f:manager()
+    assert(manager.policy:apply{ dir = store.dir })
+    eq(f:select(images[1]), "resources/koreader.png")
+    assert(manager.policy:apply{ dir = manager.empty_dir, image = a.ui.document.file })
+    eq(f:select(), "resources/koreader.png")
+    eq(f.settings.data.screensaver_document_cover, a.ui.document.file)
+end)
+test("A backup-only lease leaves the original screen active until a book is opened", function()
+    local f = fixture()
+    local s = f.settings
+    s.data.screensaver_type = "document_cover"
+    s.data.screensaver_document_cover = "/my-wallpaper.png"
+    local flush = s.flush
+    s.flush = function() error("interrupted after backing up settings") end
+    local policy = Policy.new(s)
+    eq(pcall(policy.apply, policy, { dir = "/liuju" }), false)
+    s.flush = flush
+    f:manager()
+    eq(f:select(), "/my-wallpaper.png")
+    local a = f:reader("A", { annotation("小票内容") })
+    f:drain()
+    local image = f:images(a)[1]
+    eq(f:select(image), image)
+    a:stopPlugin()
+    eq(f:select(), "/my-wallpaper.png")
+end)
+test("Devices with native-only sleep restore the lease and skip wallpaper work", function()
+    local f = fixture()
+    f.settings.data.screensaver_type = "cover"
+    local a = f:reader("A", { annotation("甲书") })
+    f:drain()
+    assert(f.settings.data.liuju_screensaver_lease)
+    local writes = f.writes
+    f.native_sleep_only = true
+    f:manager()
+    eq(f.settings.data.liuju_screensaver_lease, nil)
+    eq(f.settings.data.screensaver_type, "cover")
+    local b = f:reader("B", { annotation("乙书") })
+    f:drain()
+    eq(b._opened, nil)
+    eq(f.writes, writes)
+    local menu = {}
+    b:addToMainMenu(menu)
+    eq(menu.liuju.sub_item_table[1].enabled_func(), false)
+end)
 test("Sleep falls back safely when the index is malformed or a validator throws", function()
     local f = fixture()
     local a = f:reader("A", { annotation("有效小票") })
     f:drain()
     local images, store = f:images(a)
     local image = images[1]
+    local foreign = "liuju-" .. string.rep("f", 64) .. ".png"
+    local legacy_foreign = "liuju-" .. string.rep("e", 64) .. ".png"
+    py_png(store.dir .. "/" .. foreign, 1072, 1448)
+    py_png(store.book_dir .. "/" .. legacy_foreign, 1072, 1448)
     store.index.data = 1
     eq(f:select(image), "resources/koreader.png")
     f:drain()
+    assert(io.open(store.book_dir .. "/excluded/" .. foreign, "rb")):close()
+    assert(io.open(store.book_dir .. "/excluded/" .. legacy_foreign, "rb")):close()
     eq(f:select(image), image)
     local read = store.index.readSetting
     store.index.readSetting = function() error("index unavailable") end
@@ -738,6 +827,26 @@ test("Sleep falls back safely when the index is malformed or a validator throws"
     f.settings.data.screensaver_type = "document_cover"
     f.settings.data.screensaver_document_cover = "/my-wallpaper.png"
     eq(f:select(), "/my-wallpaper.png")
+end)
+test("An incomplete index hides unknown images in the library and repairs on reopening", function()
+    local f = fixture()
+    local rows = { annotation("有效小票") }
+    local a = f:reader("A", rows)
+    f:drain()
+    local images, store = f:images(a)
+    local foreign = "liuju-" .. string.rep("c", 64) .. ".png"
+    py_png(store.dir .. "/" .. foreign, 1072, 1448)
+    store.index:delSetting("counts")
+    store.index:saveSetting("skipped", 1)
+    a:onCloseDocument()
+    a:onCloseWidget()
+    f:manager():_preview()
+    eq(f.preview, store.fallback)
+    local reopened = f:reader("A", rows)
+    f:drain()
+    eq(f:images(reopened)[1], images[1])
+    eq(f:select(images[1]), images[1])
+    assert(io.open(store.book_dir .. "/excluded/" .. foreign, "rb")):close()
 end)
 test("PDF skips generation and preview without blocking the next supported book", function()
     local f = fixture()
