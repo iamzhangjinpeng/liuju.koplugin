@@ -166,9 +166,11 @@ local function fixture()
                     f.writes = f.writes + 1
                     if f.fail_write then
                         local file=assert(io.open(path,"wb")); file:write("partial"); file:close()
+                        if f.void_png_write then return end
                         return false,"disk full"
                     end
-                    return py_png(path,w,h)
+                    local written = py_png(path,w,h)
+                    if not f.void_png_write then return written end
                 end,
                 free = function() end,
             }
@@ -371,6 +373,25 @@ test("Partial PNG writes cannot enter the random directory and can be retried",f
     assert(f.settings.data.screensaver_dir:match("/empty$"))
     f.fail_write=false;a:onAnnotationsModified();f:drain()
     eq(#f:images(a),1)
+end)
+test("PNG writers without a return value still require a complete decodable image", function()
+    local f = fixture()
+    f.void_png_write = true
+    f.fail_write = true
+    local a = f:reader("A", { annotation("兼容旧版 PNG 写入接口") })
+    f:drain()
+    eq(#f:images(a), 0)
+    eq(a._last_stats.errors, 2)
+    eq(f.warnings[#f.warnings][2], "invalid PNG")
+    f.fail_write = false
+    a:onAnnotationsModified()
+    f:drain()
+    local images, store = f:images(a)
+    eq(#images, 1)
+    eq(a._last_stats.errors, 0)
+    eq(f:select(images[1]), images[1])
+    assert(io.open(store.fallback, "rb")):close()
+    eq(io.open(store:temp_path(), "rb"), nil)
 end)
 test("Reconciliation preserves unrelated files and disables itself on a provider change",function()
     local f=fixture();local a=f:reader("A",{annotation("旧内容")});f:drain()

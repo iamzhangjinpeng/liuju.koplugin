@@ -132,7 +132,10 @@ function Renderer:render(book, entry, filename, width, height)
                 w = l.body.w, h = l.p(260) }, l.quote_size, "left")
         end
         local written, err = canvas:writePNG(filename)
-        if not written then return nil, "write: " .. tostring(err) end
+        -- Older KOReader versions return nothing here. The store validates the file before publishing it.
+        if written == false or (written == nil and err ~= nil) then
+            return nil, "write: " .. tostring(err)
+        end
         return true
     end)
     for _, widget in ipairs(resources) do if widget then pcall(widget.free, widget) end end

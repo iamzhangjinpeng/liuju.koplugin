@@ -2,7 +2,7 @@
 
 把当前阅读书籍中简短的高亮与批注，排成带封面和标注日期的锁屏壁纸。每次 Kindle 休眠时随机展示一张，换书时自动切换图片池。
 
-**当前版本：0.1.0。** 面向已越狱并安装 KOReader 的 Kindle，主要支持 EPUB。已完成本地回归和桌面视觉检查，KPW4 的实机锁屏与最低 KOReader 版本待验证。
+**当前正式版为 0.1.1。** 面向已越狱并安装 KOReader 的 Kindle，主要支持 EPUB。已在 Kindle Paperwhite 4（KOReader v2026.07.2）通过基础功能测试。
 
 ![留句壁纸样图](previews/selected-gallery.png)
 
@@ -23,7 +23,7 @@
 
 ## 安装
 
-1. 下载并解压安装包，得到 `liuju.koplugin` 文件夹。[下载 liuju.koplugin-v0.1.0.zip](https://github.com/iamzhangjinpeng/liuju.koplugin/releases/download/v0.1.0/liuju.koplugin-v0.1.0.zip)
+1. 下载并解压安装包，得到 `liuju.koplugin` 文件夹。[下载 liuju.koplugin-v0.1.1.zip](https://github.com/iamzhangjinpeng/liuju.koplugin/releases/download/v0.1.1/liuju.koplugin-v0.1.1.zip)
 2. 完全退出 KOReader，将文件夹复制到 Kindle 的：
 
    ```text
