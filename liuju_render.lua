@@ -6,7 +6,7 @@ function Renderer.new(core, layout, draw)
 end
 
 function Renderer:render(book, entry, filename, width, height)
-    local l = self.layout.for_screen(width, height)
+    local l, cover_width
     local draw, resources, canvas = self.draw, {}
     local function text(value, w, size, options)
         local widget = draw:text(value, w, size, options)
@@ -42,7 +42,7 @@ function Renderer:render(book, entry, filename, width, height)
         widget:paintTo(canvas, box.x, box.y + math.floor((box.h - h) / 2))
     end
     local function cover(box)
-        if draw:cover(canvas, book.cover, box) then return end
+        if cover_width and draw:cover(canvas, book.cover, box) then return end
         rect(box.x, box.y, box.w, box.h, 249)
         border(box, 168)
         local inset = l.p(16)
@@ -50,6 +50,9 @@ function Renderer:render(book, entry, filename, width, height)
             w = box.w - inset * 2, h = box.h - inset * 2 }, l.p(25), "center", { bgcolor = 249 })
     end
     local ok, success, reason = pcall(function()
+        local cover_height
+        cover_width, cover_height = draw:cover_size(book.cover)
+        l = self.layout.for_screen(width, height, cover_width, cover_height)
         local blocks, content_height = {}, 0
         if entry then
             if entry.text ~= "" then
@@ -91,13 +94,9 @@ function Renderer:render(book, entry, filename, width, height)
         canvas = draw:canvas(l.width, l.height)
         rect(0, 0, l.width, l.height, 255)
         rect(l.footer.x, l.footer.y, l.footer.w, l.footer.h, 0)
-        rect(l.album.x + l.shadow, l.album.y + l.shadow, l.album.w, l.album.h, 112)
-        rect(l.album.x, l.album.y, l.album.w, l.album.h, 255)
-        border(l.album, 198)
+        rect(l.album.x, l.album.y, l.album.w, l.album.h, 0)
         cover(l.cover)
-        local brand = text("留句  /  LIUJU", l.label.w, l.label_size, { gray = 170, bgcolor = 0 })
-        brand:paintTo(canvas, l.label.x, l.label.y)
-        title(book.title, l.title, l.title_size, "left", { gray = 255, bgcolor = 0 })
+        title(book.title, l.title, l.title_size, "center", { gray = 255, bgcolor = 0 })
         if entry then
             local y = l.body.y
             for _, block in ipairs(blocks) do
@@ -106,7 +105,7 @@ function Renderer:render(book, entry, filename, width, height)
                 y = y + block.height
             end
             if entry.date ~= "" then
-                local date = text(entry.date, l.body.w, l.date_size, { gray = 116 })
+                local date = text(entry.date, l.body.w, l.date_size, { gray = 96 })
                 date:paintTo(canvas, l.body.x, y + l.date_gap)
             end
         else

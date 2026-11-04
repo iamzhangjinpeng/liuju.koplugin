@@ -35,20 +35,18 @@ function Draw:text(text, width, pixels, options)
     }
 end
 
+function Draw:cover_size(image)
+    if not image then return end
+    local width, height = image:getWidth(), image:getHeight()
+    if width > 0 and height > 0 then return width, height end
+end
+
 function Draw:cover(canvas, image, rect)
-    if not image then return false end
-    local iw, ih = image:getWidth(), image:getHeight()
-    if iw <= 0 or ih <= 0 then return false end
-    local scale = math.min(rect.w / iw, rect.h / ih)
-    local width, height = math.max(1, math.floor(iw * scale)), math.max(1, math.floor(ih * scale))
     local widget = ImageWidget:new{
         image = image, image_disposable = false,
-        width = width, height = height, scale_factor = 0,
+        width = rect.w, height = rect.h,
     }
-    local ok, err = pcall(function()
-        widget:paintTo(canvas, rect.x + math.floor((rect.w - width) / 2),
-            rect.y + math.floor((rect.h - height) / 2))
-    end)
+    local ok, err = pcall(widget.paintTo, widget, canvas, rect.x, rect.y)
     widget:free()
     if not ok then error(err) end
     return true

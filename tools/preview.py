@@ -10,7 +10,7 @@ import math
 from pathlib import Path
 
 from lupa.lua51 import LuaRuntime
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -74,11 +74,13 @@ class Painter:
             draw.text((x + dx, y + i * line_height + dy), line, font=font, fill=gray)
 
     def paint_cover(self, canvas, key, x, y, width, height):
-        if not key or key not in self.covers:
-            return False
-        image = ImageOps.contain(self.covers[key], (int(width), int(height)), Image.Resampling.LANCZOS)
-        self.canvases[canvas].paste(image, (int(x + (width - image.width) / 2), int(y + (height - image.height) / 2)))
+        image = self.covers[key].resize((int(width), int(height)), Image.Resampling.LANCZOS)
+        self.canvases[canvas].paste(image, (int(x), int(y)))
         return True
+
+    def cover_size(self, key):
+        image = self.covers.get(key)
+        return image.size if image else (None, None)
 
     def save(self, canvas, path):
         self.canvases[canvas].save(path, format="PNG")
@@ -117,6 +119,9 @@ end
 function draw:cover(canvas,image,rect)
     return py_cover(canvas.id,image,rect.x,rect.y,rect.w,rect.h)
 end
+function draw:cover_size(image)
+    return py_cover_size(image)
+end
 """
 
 
@@ -133,6 +138,7 @@ def main():
         "hash": lambda value: hashlib.sha256(value.encode()).hexdigest(),
         "canvas": painter.canvas, "rect": painter.rect, "text": painter.text,
         "paint_text": painter.paint_text, "cover": painter.paint_cover, "save": painter.save,
+        "cover_size": painter.cover_size,
         "free_canvas": lambda key: painter.canvases.pop(key, None),
         "free_text": lambda key: painter.widgets.pop(key, None),
     }

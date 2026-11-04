@@ -129,6 +129,7 @@ local function fixture()
         rect = function(_,canvas,x,y,w,h,gray)
             f.rectangles[#f.rectangles+1]={x=x,y=y,w=w,h=h,gray=gray}
         end,
+        cover_size = function(_, image) if image then return 420, 600 end end,
         cover = function() return false end,
         canvas = function(_,w,h)
             return {
@@ -601,53 +602,68 @@ test("A damaged generated cover is replaced when a book has no eligible cards", 
     eq(f:select(), cover)
     eq(f.settings.data.screensaver_type, "document_cover")
 end)
-test("Poster places excerpts above a lower-left album and white book title on the black footer",function()
+test("Poster straddles the black footer with the cover and centers the title beside it",function()
     local layout=real_dofile(TEST_ROOT.."/liuju_layout.lua")
-    for _,size in ipairs({{1072,1448},{600,800},{1448,1072}}) do
-        local l=layout.for_screen(size[1],size[2])
+    for _,size in ipairs({{1072,1448,420,600},{600,800,300,300},{1448,1072,600,420}}) do
+        local l=layout.for_screen(size[1],size[2],size[3],size[4])
         eq(l.footer.x,0);eq(l.footer.w,l.width);eq(l.footer.y+l.footer.h,l.height)
         assert(l.body.y<l.height*0.25)
         assert(l.body.y+l.body.h<l.album.y)
         assert(l.body.y+l.body.h+l.date_gap+math.ceil(l.date_size*1.48)<l.album.y)
         assert(l.album.x<l.width*0.25 and l.album.x+l.album.w<l.title.x)
-        assert(l.title.y>=l.footer.y and l.title.y+l.title.h<=l.height)
-        assert(l.album.y<l.footer.y and l.album.y+l.album.h>l.footer.y)
-        eq(l.album.w,l.album.h)
+        eq(l.title.x-l.album.x-l.album.w,l.width-l.title.x-l.title.w)
+        assert(math.abs((2*l.title.y+l.title.h)-(2*l.footer.y+l.footer.h))<=1)
+        eq(l.footer.y-l.album.y,math.floor(l.album.h/2))
+        eq(l.footer.y-l.cover.y,math.floor(l.cover.h/2))
+        local frame=l.cover.x-l.album.x
+        eq(l.cover.y-l.album.y,frame)
+        eq(l.album.w-l.cover.w,2*frame)
+        eq(l.album.h-l.cover.h,2*frame)
+        assert(math.abs(l.cover.w-l.cover.h*size[3]/size[4])<=2)
     end
     local f=fixture();local a=f:reader("A",{annotation("正文在上方")});f:drain()
     local l=layout.for_screen(1072,1448)
-    local title_seen,body_seen,footer_seen=false,false,false
+    local title_seen,body_seen,footer_seen,frame_seen=false,false,false,false
     for _,paint in ipairs(f.painted_texts) do
         if paint.text=="测试书 A" and paint.x==l.title.x then
             eq(paint.options.gray,255);eq(paint.options.bgcolor,0)
-            assert(paint.y>=l.footer.y);title_seen=true
+            eq(paint.options.align,"center")
+            local line_height=math.floor(l.title_size*(1+paint.options.line_height)+0.5)
+            eq(paint.y,l.title.y+math.floor((l.title.h-line_height)/2))
+            title_seen=true
         elseif paint.text=="正文在上方" then
             eq(paint.x,l.body.x);eq(paint.y,l.body.y);body_seen=true
         end
     end
     for _,rect in ipairs(f.rectangles) do
         if rect.x==0 and rect.y==l.footer.y and rect.w==l.width and rect.gray==0 then footer_seen=true end
+        if rect.x==l.album.x and rect.y==l.album.y and rect.w==l.album.w and rect.h==l.album.h and rect.gray==0 then
+            frame_seen=true
+        end
     end
-    assert(title_seen and body_seen and footer_seen)
+    assert(title_seen and body_seen and footer_seen and frame_seen)
 end)
-test("Production drawing adapter applies DPI once and preserves cover aspect ratio",function()
-    local raw_size, image_args, image_freed
+test("Production drawing adapter applies DPI once and paints the fitted cover rectangle",function()
+    local raw_size, image_args, image_freed, painted_x, painted_y
     package.loaded["device"]={screen={scaleBySize=function(_,value)return value*2 end}}
     package.loaded["ffi/blitbuffer"]={Color8=function(v)return v end,COLOR_WHITE=255}
     package.loaded["ui/font"]={getFace=function(_,name,size)raw_size=size;return{size=size*2}end}
     package.loaded["ui/widget/textboxwidget"]={new=function(_,args)return args end}
     package.loaded["ui/widget/imagewidget"]={new=function(_,args)
         image_args=args
-        return{paintTo=function()end,free=function()image_freed=true end}
+        return{paintTo=function(_,_,x,y)painted_x,painted_y=x,y end,free=function()image_freed=true end}
     end}
     local draw=real_dofile(TEST_ROOT.."/liuju_draw.lua")
     local widget=draw:text("文字",772,46)
     eq(raw_size,23);eq(widget.face.size,46);eq(widget.height,nil,"no native clipping height")
     local white=draw:text("白字书名",572,40,{gray=255,bgcolor=0})
     eq(white.fgcolor,255);eq(white.bgcolor,0)
-    assert(draw:cover({}, {getWidth=function()return 420 end,getHeight=function()return 600 end},
-        {x=146,y=181,w=180,h=256}))
+    local image = {getWidth=function()return 420 end,getHeight=function()return 600 end}
+    local width,height=draw:cover_size(image)
+    eq(width,420);eq(height,600)
+    assert(draw:cover({}, image, {x=146,y=181,w=179,h=256}))
     eq(image_args.width,179);eq(image_args.height,256)
+    eq(painted_x,146);eq(painted_y,181)
     eq(image_args.image_disposable,false);assert(image_freed)
 end)
 print(string.format("%d regression scenarios passed",test_count))
