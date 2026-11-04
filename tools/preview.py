@@ -55,12 +55,14 @@ class Painter:
                     line += char
             lines.append(line)
         line_height = math.floor(float(size) * (1 + float(options["line_height"] or 0.48)) + 0.5)
-        height = line_height * len(lines)
+        max_height = options["max_height"]
+        visible = min(len(lines), max(1, math.floor(max_height / line_height))) if max_height else len(lines)
+        height = line_height * visible
         key = self.next_id()
         gray = 28 if options["gray"] is None else int(options["gray"])
         background = 255 if options["bgcolor"] is None else int(options["bgcolor"])
-        self.widgets[key] = (lines, font, line_height, int(width), options["align"], gray, background)
-        return key, height, len(lines)
+        self.widgets[key] = (lines[:visible], font, line_height, int(width), options["align"], gray, background)
+        return key, height, len(lines), visible
 
     def paint_text(self, key, canvas, x, y):
         lines, font, line_height, width, align, gray, background = self.widgets[key]
@@ -110,9 +112,10 @@ function draw:canvas(w,h)
 end
 function draw:rect(canvas,x,y,w,h,gray)py_rect(canvas.id,x,y,w,h,gray)end
 function draw:text(value,width,size,options)
-    local id,height,lines=py_text(value,width,size,options or {})
+    local id,height,lines,visible=py_text(value,width,size,options or {})
     return {getSize=function()return{h=height}end,
         getAllLineCount=function()return lines end,
+        getVisLineCount=function()return visible end,
         paintTo=function(_,canvas,x,y)py_paint_text(id,canvas.id,x,y)end,
         free=function()py_free_text(id)end}
 end

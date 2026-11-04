@@ -237,14 +237,13 @@ function Liuju:_prepare_job(pending)
         fingerprint(doc.file), cover_file, fingerprint(cover_file),
         G_reader_settings:readSetting("use_xtext"), Draw.signature and Draw:signature() or "" })
     local entries, reasons = Core.collect(annotations, G_reader_settings:readSetting(LIMIT), key)
-    self._annotation_snapshot = snapshot_annotations(annotations)
     return {
         document = doc, book = { file = doc.file, title = title }, key = key,
         store = Store.new(self.root, self.state_root, Core.book_id(doc.file), width, height),
         entries = entries, index = 0, generation = self._generation,
         force = pending.force, show_result = pending.show_result, ready = 0,
         stats = { created = 0, cached = 0, layout = 0, errors = 0, filtered = total(reasons) },
-    }
+    }, annotations
 end
 
 function Liuju:_write_image(job, entry)
@@ -268,7 +267,8 @@ function Liuju:_start_sync()
     if not pending then return end
     self._pending = nil
     local ok, err = pcall(function()
-        local job = self:_prepare_job(pending)
+        local job, annotations = self:_prepare_job(pending)
+        self._annotation_snapshot = snapshot_annotations(annotations)
         self._job = job
         self:_schedule(function() self:_step(job) end)
     end)
@@ -306,15 +306,14 @@ end
 function Liuju:_step(job)
     if not self:_job_valid(job) then self:_cancel_job(); return end
     local ok, err = pcall(function()
+        local delay
         if job.index == 0 then
             local available = job.store:reconcile(job.entries, job.force)
             job.todo = {}
             for _, entry in ipairs(job.entries) do
                 local valid = available[entry.filename]
                 if valid then job.ready = job.ready + 1 end
-                if valid and not job.force then
-                    job.stats.cached = job.stats.cached + 1
-                elseif job.store.skipped[entry.filename] == "layout" then
+                if not valid and job.store.skipped[entry.filename] == "layout" then
                     job.stats.layout = job.stats.layout + 1
                 else
                     job.todo[#job.todo + 1] = { entry = entry, valid = valid }
@@ -349,26 +348,39 @@ function Liuju:_step(job)
                 return
             end
             local entry = item.entry
-            local written, why = self:_write_image(job, entry)
-            if written then
-                job.store.skipped[entry.filename] = nil
-                job.stats.created = job.stats.created + 1
-                if not item.valid then job.ready = job.ready + 1 end
-            elseif written == false and why == "layout" then
-                job.store.skipped[entry.filename] = "layout"
-                job.stats.layout = job.stats.layout + 1
-                if item.valid then
-                    assert(os.remove(job.store.dir .. "/" .. entry.filename))
-                    job.ready = job.ready - 1
-                end
-            else
-                job.stats.errors = job.stats.errors + 1
-                logger.warn("留句: 小票生成失败", tostring(why))
+            if item.valid then
+                item.valid = job.store:verify_cached(entry.filename)
+                if not item.valid then job.ready = job.ready - 1 end
             end
-            self:_apply_target(job)
+            if item.valid and not job.force then
+                job.stats.cached = job.stats.cached + 1
+                delay = 0.02
+            elseif not job.force and job.store.skipped[entry.filename] == "layout" then
+                job.stats.layout = job.stats.layout + 1
+                self:_apply_target(job)
+                delay = 0.02
+            else
+                local written, why = self:_write_image(job, entry)
+                if written then
+                    job.store.skipped[entry.filename] = nil
+                    job.stats.created = job.stats.created + 1
+                    if not item.valid then job.ready = job.ready + 1 end
+                elseif written == false and why == "layout" then
+                    job.store.skipped[entry.filename] = "layout"
+                    job.stats.layout = job.stats.layout + 1
+                    if item.valid then
+                        Store.discard_candidate(job.store.dir, job.store.dir .. "/" .. entry.filename)
+                        job.ready = job.ready - 1
+                    end
+                else
+                    job.stats.errors = job.stats.errors + 1
+                    logger.warn("留句: 小票生成失败", tostring(why))
+                end
+                self:_apply_target(job)
+            end
             job.index = job.index + 1
         end
-        self:_schedule(function() self:_step(job) end)
+        self:_schedule(function() self:_step(job) end, delay)
     end)
     if not ok then
         logger.warn("留句: 同步停止", tostring(err))
@@ -446,20 +458,30 @@ function Liuju:_set_limit(value)
 end
 
 function Liuju:_preview()
-    local last = G_reader_settings:readSetting(LAST_BOOK)
-    if type(last) ~= "table" then notify(_("请先打开一本书生成小票。")); return end
-    local ok, store = pcall(Store.new, self.root, self.state_root, last.id, last.width, last.height)
-    if not ok then notify(_("暂时没有可预览的壁纸。")); return end
-    local images = {}
-    if not self._pending and not (self._job and self._job.index == 0) then
-        images = store:images(Core.limit(G_reader_settings:readSetting(LIMIT)))
+    local ok, store, allowed, fallback
+    if self:_current() then
+        if not self._pending and self:_annotations_changed() then self:_queue_sync(false, false) end
+        local job
+        ok, job = pcall(self._prepare_job, self, {})
+        if ok then
+            store, allowed = job.store, {}
+            for _, entry in ipairs(job.entries) do allowed[entry.filename] = true end
+            if store.index:readSetting("cover_key") == job.key then fallback = store.fallback end
+        end
+    else
+        local last = G_reader_settings:readSetting(LAST_BOOK)
+        if type(last) ~= "table" then notify(_("请先打开一本书生成小票。")); return end
+        ok, store = pcall(Store.new, self.root, self.state_root, last.id, last.width, last.height)
+        if ok then fallback = store.fallback end
     end
+    if not ok then notify(_("暂时没有可预览的壁纸。")); return end
+    local images = store:images(Core.limit(G_reader_settings:readSetting(LIMIT)), allowed)
     local path
     while #images > 0 and not path do
         local candidate = table.remove(images, math.random(#images))
-        if Store.valid_png(candidate, last.width, last.height) then path = candidate end
+        if Store.valid_png(candidate, store.width, store.height) then path = candidate end
     end
-    if not path and Store.valid_png(store.fallback, last.width, last.height) then path = store.fallback end
+    if not path and fallback and Store.valid_png(fallback, store.width, store.height) then path = fallback end
     if not path then notify(_("暂时没有可预览的壁纸。")); return end
     UIManager:show(require("ui/widget/imageviewer"):new{ file = path, fullscreen = true })
 end

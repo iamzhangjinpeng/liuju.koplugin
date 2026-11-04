@@ -35,7 +35,7 @@ local function uint32(s)
     local a,b,c,d = s:byte(1,4)
     return ((a * 256 + b) * 256 + c) * 256 + d
 end
-function Store.decode_png(path, w, h)
+local function valid_png_header(path, w, h)
     local f = io.open(path, "rb")
     if not f then return end
     local head = f:read(24)
@@ -43,11 +43,14 @@ function Store.decode_png(path, w, h)
     local tail
     if size and size >= 45 then f:seek("end", -12); tail = f:read(12) end
     f:close()
-    local valid = head and head:sub(1,8) == "\137PNG\r\n\26\n"
+    return head and head:sub(1,8) == "\137PNG\r\n\26\n"
         and head:sub(13,16) == "IHDR"
         and uint32(head:sub(17,20)) == w and uint32(head:sub(21,24)) == h
         and tail == "\0\0\0\0IEND\174\66\96\130"
-    if not valid then return end
+end
+
+function Store.decode_png(path, w, h)
+    if not valid_png_header(path, w, h) then return end
     local ok, image = pcall(RenderImage.renderImageFile, RenderImage, path)
     if not ok then return end
     if image and image:getWidth() == w and image:getHeight() == h then return image end
@@ -91,6 +94,14 @@ function Store.discard_candidate(dir, path)
     if is_candidate(dir, path) then remove(path) end
 end
 
+function Store:verify_cached(name)
+    local path = self.dir .. "/" .. name
+    local image = Store.decode_candidate(self.dir, path, self.width, self.height)
+    if image then image:free(); return true end
+    Store.discard_candidate(self.dir, path)
+    return false
+end
+
 local function same_counts(old, new)
     if type(old) ~= "table" then return false end
     for name, count in pairs(old) do if new[name] ~= count then return false end end
@@ -120,7 +131,7 @@ function Store:reconcile(entries, force)
         local path = self.dir .. "/" .. name
         local kind = mode(path)
         if kind == "file" and managed(name) then
-            if counts[name] and Store.valid_png(path, self.width, self.height) then
+            if counts[name] and valid_png_header(path, self.width, self.height) then
                 available[name] = true
             else
                 remove(path)
@@ -133,7 +144,7 @@ function Store:reconcile(entries, force)
     for _, name in ipairs(list(self.book_dir)) do
         local path = self.book_dir .. "/" .. name
         if managed(name) and mode(path) == "file" then
-            if counts[name] and not available[name] and Store.valid_png(path, self.width, self.height) then
+            if counts[name] and not available[name] and valid_png_header(path, self.width, self.height) then
                 local ok, err = os.rename(path, self.dir .. "/" .. name)
                 assert(ok, "Cannot migrate cached wallpaper: " .. tostring(err))
                 available[name] = true
@@ -197,15 +208,16 @@ function Store:write(renderer, book, entry)
     return true
 end
 
-function Store:images(limit)
+function Store:images(limit, allowed)
     local files = {}
-    if self.counts == false then return files end
+    if not allowed and self.counts == false then return files end
     for _, dir in ipairs({ self.dir, self.book_dir }) do
         for _, name in ipairs(list(dir)) do
             local path = dir .. "/" .. name
             local count = type(self.counts) == "table" and self.counts[name]
-            if (self.counts == nil or (type(count) == "number" and count <= (limit or math.huge)))
-                    and is_candidate(dir, path) then
+            local matches = allowed and allowed[name] or (not allowed
+                and (self.counts == nil or (type(count) == "number" and count <= (limit or math.huge))))
+            if matches and is_candidate(dir, path) then
                 files[#files + 1] = path
             end
         end

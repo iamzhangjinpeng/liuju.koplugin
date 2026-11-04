@@ -109,13 +109,18 @@ local function fixture()
         f.live_widgets = f.live_widgets + 1
         local freed = false
         f.texts[#f.texts+1] = text
-        local columns, lines = math.max(1,math.floor(width/size)), 0
+        local glyph_width = text:match("^[%z\1-\127]*$") and size / 2 or size
+        local columns, lines = math.max(1,math.floor(width/glyph_width)), 0
         for line in (text.."\n"):gmatch("(.-)\n") do
             lines = lines + math.max(1,math.ceil(#(Core.characters(line) or {})/columns))
         end
+        local line_height = math.floor(size*(1+(options.line_height or 0.48))+0.5)
+        local visible = options.max_height and math.min(lines, math.max(1, math.floor(options.max_height/line_height))) or lines
+        f.max_bitmap_height = math.max(f.max_bitmap_height or 0, line_height*visible)
         return {
-            getSize = function() return {h=math.floor(size*(1+(options.line_height or 0.48))+0.5)*lines} end,
+            getSize = function() return {h=line_height*visible} end,
             getAllLineCount = function() return lines end,
+            getVisLineCount = function() return visible end,
             paintTo = function(_,canvas,x,y)
                 f.painted_texts[#f.painted_texts+1] = {text=text,x=x,y=y,options=options}
             end, free = function()
@@ -156,6 +161,7 @@ local function fixture()
                 or s.data.screensaver_document_cover
         end },
         ["ui/renderimage"] = { renderImageFile = function(_, path)
+            f.decodes = (f.decodes or 0) + 1
             local width, height = py_decode_png(path)
             if not width then return end
             f.live_images = f.live_images + 1
@@ -602,6 +608,92 @@ test("A damaged generated cover is replaced when a book has no eligible cards", 
     eq(f:select(), cover)
     eq(f.settings.data.screensaver_type, "document_cover")
 end)
+test("Preview never borrows the last book's images when the current book has no cache", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("甲书内容") })
+    f:drain()
+    local old = f:images(a)[1]
+    a.policy:restore(true)
+    a:onCloseDocument()
+    a:onCloseWidget()
+    local b = f:reader("B", { annotation("乙书内容") })
+    b:_preview()
+    eq(f.preview, nil)
+    assert(f.messages[#f.messages]:find("没有可预览", 1, true))
+    b:onCloseDocument()
+    b:onCloseWidget()
+    f:manager():_preview()
+    eq(f.preview, old)
+end)
+test("Preview ignores a silently edited note until its new wallpaper is ready", function()
+    local f = fixture()
+    local row = annotation("摘录", "编辑前")
+    local a = f:reader("A", { row })
+    f:drain()
+    local images, store = f:images(a)
+    row.note = "编辑后"
+    a:_preview()
+    eq(f.preview, store.fallback)
+    f:drain()
+    a:_preview()
+    assert(f.preview ~= images[1])
+    eq(f.preview, f:images(a)[1])
+end)
+test("Quote and note bitmaps stay bounded when eligible text contains thousands of newlines", function()
+    local f = fixture()
+    local text = "甲" .. string.rep("\n", 10000) .. "乙"
+    local a = f:reader("A", { annotation(text), annotation("短句", text) })
+    f:drain()
+    eq(a._last_stats.layout, 2)
+    eq(#f:images(a), 0)
+    local layout = real_dofile(TEST_ROOT.."/liuju_layout.lua").for_screen(1072,1448)
+    assert(f.max_bitmap_height <= layout.body.h)
+end)
+test("A large cached pool is verified across callbacks and closing avoids bulk decodes", function()
+    local f = fixture()
+    local rows = {}
+    for i = 1, 120 do rows[i] = annotation("缓存 " .. i) end
+    local a = f:reader("A", rows)
+    f:drain()
+    local writes = f.writes
+    a:onCloseDocument()
+    a:onCloseWidget()
+    local reopened = f:reader("A", rows)
+    local before = f.decodes
+    for i = 1, 122 do
+        local start = f.decodes
+        assert(f:step())
+        assert(f.decodes - start <= 1, "bulk decode in one callback")
+    end
+    f:drain()
+    eq(f.decodes - before, 121)
+    eq(reopened._last_stats.cached, 120)
+    eq(f.writes, writes)
+    reopened:onCloseDocument()
+    reopened:onCloseWidget()
+    local quick = f:reader("A", rows)
+    before = f.decodes
+    quick:onCloseDocument()
+    eq(f.decodes - before, 1, "closing only checks the cover")
+    eq(f.settings.data.screensaver_type, "random_image")
+end)
+test("Titles keep all characters when they fit and ellipsize only on overflow", function()
+    local layout = real_dofile(TEST_ROOT.."/liuju_layout.lua").for_screen(1072,1448)
+    for _, suffix in ipairs({ "", string.rep(" Extra words", 12) }) do
+        local f = fixture()
+        local a = f:reader("A", { annotation("短摘录") })
+        local title = "A Quiet Place to Read: Notes on Attention and Everyday Life" .. suffix
+        a.ui.doc_props.title = title
+        f:drain()
+        local painted
+        for _, item in ipairs(f.painted_texts) do
+            if item.x == layout.title.x and item.y >= layout.footer.y then painted = item.text end
+        end
+        assert(painted)
+        if suffix == "" then eq(painted, title)
+        else assert(painted:match("…$") and #painted < #title) end
+    end
+end)
 test("Poster straddles the black footer with the cover and centers the title beside it",function()
     local layout=real_dofile(TEST_ROOT.."/liuju_layout.lua")
     for _,size in ipairs({{1072,1448,420,600},{600,800,300,300},{1448,1072,600,420}}) do
@@ -656,8 +748,9 @@ test("Production drawing adapter applies DPI once and paints the fitted cover re
     local draw=real_dofile(TEST_ROOT.."/liuju_draw.lua")
     local widget=draw:text("文字",772,46)
     eq(raw_size,23);eq(widget.face.size,46);eq(widget.height,nil,"no native clipping height")
-    local white=draw:text("白字书名",572,40,{gray=255,bgcolor=0})
+    local white=draw:text("白字书名",572,40,{gray=255,bgcolor=0,max_height=120})
     eq(white.fgcolor,255);eq(white.bgcolor,0)
+    eq(white.height,120);eq(white.height_adjust,true)
     local image = {getWidth=function()return 420 end,getHeight=function()return 600 end}
     local width,height=draw:cover_size(image)
     eq(width,420);eq(height,600)

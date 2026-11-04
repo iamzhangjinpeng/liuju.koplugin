@@ -1,6 +1,6 @@
 # 留句实现记录
 
-日期：2026-11-04；候选版本：0.1.0-rc.5。
+日期：2026-11-04；候选版本：0.1.0-rc.6。
 
 ## 目标与完成情况
 
@@ -32,10 +32,10 @@ KPW4 设计基准中，正文 52 像素、笔记 46 像素、底栏书名 44 像
 - `ReaderReady` 与 `AnnotationsModified`：书籍准备完成、标注发生变化后的入口。回调延迟到当前事件完成后再读取。
 - Kindle 在派发 `Suspend` 前调用 `Screensaver:setup()`。留句在普通休眠选图前核对标注快照，覆盖未广播 `AnnotationsModified` 的编辑。
 - `BookInfo:getCoverImage(document)`：读取原始或自定义封面，生成任务结束或取消时释放返回的图像。
-- `TextBoxWidget`：不设置裁剪高度，读取完整渲染尺寸和行数后决定是否可生成。
+- `TextBoxWidget`：为文本位图设置高度上限，比较总行数和可见行数，并用实际位图高度决定内容是否可生成。
 - `Font:getFace` 自身执行屏幕缩放：绘图适配器先补偿该缩放，避免 KPW4 上字号被放大两次。
 - `Blitbuffer.TYPE_BB8` 与 `writePNG`：离屏灰度画布和 PNG 输出。
-- `RenderImage:renderImageFile`：核验缓存能否实际解码。休眠时把已解码的图片交给 KOReader 屏保部件绘制。
+- `RenderImage:renderImageFile`：缓存分次解码。休眠时解码选中的图片并交给 KOReader 屏保部件绘制。
 - `ImageWidget`：显式保持封面比例，源封面由任务持有，缩放部件释放自身资源。
 - `screensaver_type = random_image`：随机目录；`document_cover` 加图片路径：静态回退。
 - 关闭按文件名顺序轮播；根据当前池大小提高文件扫描上限，涉及的设置一并备份。

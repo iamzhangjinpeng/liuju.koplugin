@@ -27,6 +27,7 @@ function Draw:text(text, width, pixels, options)
     local face = assert(Font:getFace("cfont", pixels / factor), "No UI font available")
     return TextBoxWidget:new{
         text = text, width = width, face = face,
+        height = options.max_height, height_adjust = options.max_height ~= nil,
         bold = options.bold, line_height = options.line_height or 0.48,
         alignment = options.align or "left", alignment_strict = true,
         justified = false, auto_para_direction = true,

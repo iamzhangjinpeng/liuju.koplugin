@@ -11,6 +11,9 @@ function Renderer:render(book, entry, filename, width, height)
     local function text(value, w, size, options)
         local widget = draw:text(value, w, size, options)
         resources[#resources + 1] = widget
+        if options.max_height and widget:getAllLineCount() > widget:getVisLineCount() then
+            return widget, math.huge
+        end
         return widget, widget:getSize().h
     end
     local function release(widget)
@@ -29,17 +32,26 @@ function Renderer:render(book, entry, filename, width, height)
     local function title(value, box, size, align, colors)
         colors = colors or {}
         local options = { bold = true, align = align, gray = colors.gray or 28,
-            bgcolor = colors.bgcolor or 255, line_height = 0.35 }
-        local value_now = self.core.shorten(value, 48)
-        local widget, h = text(value_now, box.w, size, options)
-        while h > box.h do
-            local chars = self.core.characters(value_now)
-            if not chars or #chars <= 2 then return end
+            bgcolor = colors.bgcolor or 255, line_height = 0.35, max_height = box.h }
+        local widget, h = text(value, box.w, size, options)
+        if h > box.h then
             release(widget)
-            value_now = self.core.shorten(value_now, #chars - 1)
-            widget, h = text(value_now, box.w, size, options)
+            widget = nil
+            local low, high = 2, #(self.core.characters(value) or {}) - 1
+            while low <= high do
+                local middle = math.floor((low + high) / 2)
+                local candidate, height = text(self.core.shorten(value, middle), box.w, size, options)
+                if height <= box.h then
+                    if widget then release(widget) end
+                    widget, h = candidate, height
+                    low = middle + 1
+                else
+                    release(candidate)
+                    high = middle - 1
+                end
+            end
         end
-        widget:paintTo(canvas, box.x, box.y + math.floor((box.h - h) / 2))
+        if widget then widget:paintTo(canvas, box.x, box.y + math.floor((box.h - h) / 2)) end
     end
     local function cover(box)
         if cover_width and draw:cover(canvas, book.cover, box) then return end
@@ -54,9 +66,12 @@ function Renderer:render(book, entry, filename, width, height)
         cover_width, cover_height = draw:cover_size(book.cover)
         l = self.layout.for_screen(width, height, cover_width, cover_height)
         local blocks, content_height = {}, 0
+        local body_height = l.body.h - l.body_padding * 2
         if entry then
             if entry.text ~= "" then
-                local widget, h = text(entry.text, l.body.w, l.quote_size, { line_height = l.line_height })
+                local options = { line_height = l.line_height, max_height = body_height }
+                local widget, h = text(entry.text, l.body.w, l.quote_size, options)
+                if h > body_height then return false, "layout" end
                 local width = l.body.w
                 -- Balance short, plain quotes by narrowing their text block,
                 -- never their font. Native shaping decides the line count;
@@ -67,7 +82,7 @@ function Renderer:render(book, entry, filename, width, height)
                         local low, high = math.floor(width * 0.35), width
                         while high - low > l.p(4) do
                             local middle = math.floor((low + high) / 2)
-                            local candidate, ch = text(entry.text, middle, l.quote_size, { line_height = l.line_height })
+                            local candidate, ch = text(entry.text, middle, l.quote_size, options)
                             if candidate:getAllLineCount() <= lines and ch <= h then
                                 release(widget)
                                 widget, width, high = candidate, middle, middle
@@ -84,12 +99,14 @@ function Renderer:render(book, entry, filename, width, height)
             if entry.note ~= "" then
                 local gap = content_height > 0 and l.note_gap or 0
                 local label, lh = text("笔记", l.body.w, l.label_size, { gray = 110 })
-                local note, nh = text(entry.note, l.body.w, l.note_size, { line_height = l.line_height })
+                local remaining = body_height - content_height - gap - lh - l.note_label_gap
+                if remaining <= 0 then return false, "layout" end
+                local note, nh = text(entry.note, l.body.w, l.note_size,
+                    { line_height = l.line_height, max_height = remaining })
+                if nh > remaining then return false, "layout" end
                 blocks[#blocks + 1] = { widget = label, height = lh, gap = gap }
                 blocks[#blocks + 1] = { widget = note, height = nh, gap = l.note_label_gap }
-                content_height = content_height + gap + lh + l.note_label_gap + nh
             end
-            if content_height > l.body.h - l.body_padding * 2 then return false, "layout" end
         end
         canvas = draw:canvas(l.width, l.height)
         rect(0, 0, l.width, l.height, 255)
