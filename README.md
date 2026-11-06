@@ -2,7 +2,7 @@
 
 把当前阅读书籍中简短的高亮与批注，排成带书名和标注日期的锁屏壁纸。每次 Kindle 休眠时随机展示一张，换书时自动切换图片池。
 
-**当前正式版为 1.1.1。** 留句面向已越狱并安装 KOReader 的 Kindle，主要支持 EPUB。0.1.1 的壁纸基础功能已在 Kindle Paperwhite 4（KOReader v2026.07.2）通过实机测试。
+**当前正式版为 1.2.0。** 留句面向已越狱并安装 KOReader 的 Kindle，主要支持 EPUB。0.1.1 的壁纸基础功能已在 Kindle Paperwhite 4（KOReader v2026.07.2）通过实机测试。
 
 ## 三种壁纸预览
 
@@ -30,7 +30,7 @@
 
 ## 安装
 
-1. 下载并解压安装包，得到 `liuju.koplugin` 文件夹。[下载 liuju.koplugin-v1.1.1.zip](https://github.com/iamzhangjinpeng/liuju.koplugin/releases/download/v1.1.1/liuju.koplugin-v1.1.1.zip)
+1. 下载并解压安装包，得到 `liuju.koplugin` 文件夹。[下载 liuju.koplugin-v1.2.0.zip](https://github.com/iamzhangjinpeng/liuju.koplugin/releases/download/v1.2.0/liuju.koplugin-v1.2.0.zip)
 2. 完全退出 KOReader，将文件夹复制到 Kindle 的：
 
    ```text
@@ -43,6 +43,7 @@
    ├── liuju_policy.lua
    ├── liuju_render.lua
    ├── liuju_store.lua
+   ├── liuju_update.lua
    └── assets/                 # 三张壁纸底图
    ```
 
@@ -50,7 +51,7 @@
 
 如果同时安装单向历或一言，只需开启其中一款的自动屏保。使用留句锁屏时，先关闭单向历和一言的自动配置，再启用留句。发现其他插件接管后，留句会关闭自己的屏保开关并保留对方的显示设置。
 
-安装包包含八个 Lua 文件和三张底图。复制插件时保留完整的 `assets/` 目录。
+安装包包含九个 Lua 文件和三张底图。复制插件时保留完整的 `assets/` 目录。1.1.1 或更旧版本需要先通过 USB 安装一次，之后可以使用插件菜单在线更新。
 
 升级至 1.1.0 后，重新打开书籍即可用新样式生成小票。书库中如果原书已删除、被替换或尚未核验，锁屏会使用通用屏保。若只是暂时无法核验，原书恢复后可在下次休眠时继续显示小票。
 
@@ -65,6 +66,9 @@
 | 更新当前书的小票 | 阅读 EPUB 等支持的书籍时，可以手动重新生成小票。完成后会显示可用张数和跳过条数。该操作需要启用留句屏保。 |
 | 预览一张 | 阅读时随机预览当前书的一张小票。生成中或暂无小票时会提示状态。在书库可以预览最近一本经核对的书。 |
 | 壁纸样式（1.1.0） | 单选「原版半露 CD（默认）」「白底日期卡」或「纯色深灰卡」。所选样式在重启后保留。启用留句屏保时，切换会离线重绘当前书的小票。在书库切换时，使用最近一本经核对的书的已保存标注。 |
+| 在线更新（1.2.0） | 显示当前版本。点「检查更新」连接 GitHub 查找最新正式版。确认后下载、校验并安装，重启 KOReader 生效。日常阅读与锁屏照常离线。 |
+
+检查或下载时可轻触进度提示取消。更新只替换插件目录，原有设置、小票和批注保留。如果下载、校验或写入失败，可重试或通过 USB 覆盖安装。如果更新替换目录时突然断电，且留句菜单消失，可通过 USB 重新安装正式版，也可把插件目录旁 `liuju-update-*/previous` 中的旧版移回 `liuju.koplugin/`。
 
 在书库启用留句时，会尝试恢复最近一本经核对的书的小票；若只是旧版保存了启用状态、尚未接管屏保，重启 KOReader 后也会尝试恢复。最近一本书的批注会重新核对，已删除或修改摘录对应的旧图不会显示。调低字数上限时，留句会立即筛选最近一本书的小票。旧版缓存如果缺少可核对的记录，重新打开书籍即可生成新图。
 
@@ -100,6 +104,8 @@
    ```
 
 3. 安全弹出 Kindle。再次打开 KOReader 时，可在屏保设置里确认原来的屏保已恢复，或后来手动选择的屏保仍在使用。
+
+如果插件目录旁有中断更新留下的 `liuju-update-*` 目录，确认不需要其中的旧版备份后，也可一并删除。
 
 如果菜单里没有“删除插件和设置”，先在“工具 → 留句”关闭“启用留句屏保”，让留句恢复屏保设置。完全退出 KOReader 后，手动删除 `/mnt/us/koreader/plugins/liuju.koplugin/` 和上面两个缓存目录。若也要清除留句偏好，可先备份 `/mnt/us/koreader/settings.reader.lua`，再用文本编辑器删除其中的 `liuju_enabled`、`liuju_character_limit`、`liuju_wallpaper_style`、`liuju_last_book` 和残留的 `liuju_screensaver_lease` 条目。如果 `plugins_disabled` 里有 `liuju` 条目，也可以一并移除。保留全局设置文件和其他条目。
 

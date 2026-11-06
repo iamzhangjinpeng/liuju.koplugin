@@ -17,6 +17,7 @@ local Renderer = load_module("render")
 local Draw = load_module("draw")
 local Liuju = WidgetContainer:extend{ name = "liuju", is_doc_only = false }
 local active_instance
+local Update
 local screensaver_hook_installed = false
 local unsupported_notified = false
 local LIMIT, LAST_BOOK = "liuju_character_limit", "liuju_last_book"
@@ -228,6 +229,7 @@ end
 
 function Liuju:_shutdown()
     self:_cancel_job()
+    if self._updater then self._updater:cancel() end
     self._annotation_snapshot = nil
     self._opened = nil
     self._stopped = true
@@ -751,6 +753,7 @@ function Liuju:onCloseWidget() self:_shutdown() end
 function Liuju:onSuspend()
     self._suspended = true
     self:_clear_timer()
+    if self._updater then self._updater:cancel() end
 end
 function Liuju:onResume()
     if self._stopped or active_instance ~= self then return end
@@ -916,6 +919,24 @@ function Liuju:_update_current_book()
     })
 end
 
+function Liuju:_check_for_updates()
+    if not self._updater then
+        if not Update then
+            local ok, result = pcall(load_module, "update")
+            if not ok then
+                logger.warn("留句: 无法加载在线更新", tostring(result))
+                notify(_("在线更新暂不可用，请通过 USB 手动更新。"))
+                return
+            end
+            Update = result
+        end
+        self._updater = Update.new(Core, self.path or base, self.version, function()
+            return active_instance == self and not self._stopped and not self._suspended
+        end)
+    end
+    self._updater:check()
+end
+
 function Liuju:addToMainMenu(items)
     local labels = {
         classic = _("原版半露 CD（默认）"),
@@ -976,6 +997,14 @@ function Liuju:addToMainMenu(items)
             },
             { text = _("预览一张"), callback = function() self:_preview() end },
             { text = _("壁纸样式"), sub_item_table = styles },
+            {
+                text = _("在线更新"),
+                sub_item_table = {
+                    { text_func = function() return string.format(_("当前版本：%s"), self.version or _("未知")) end,
+                        enabled = false },
+                    { text = _("检查更新"), callback = function() self:_check_for_updates() end },
+                },
+            },
         },
     }
 end

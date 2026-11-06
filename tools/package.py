@@ -14,6 +14,7 @@ RUNTIME_FILES = (
     "liuju_policy.lua",
     "liuju_render.lua",
     "liuju_store.lua",
+    "liuju_update.lua",
     "main.lua",
     "assets/lyrics-background.png",
     "assets/date-card-background.png",

@@ -1587,4 +1587,23 @@ test("Production adapter applies DPI once and frees scaled and unscaled backgrou
     eq(blitted, scaled); eq(scaled.freed, 1); eq(source.freed, 1)
 end)
 
+test("Online update menu displays the running version without loading network code", function()
+    local f = fixture()
+    local instance = f:manager()
+    instance.version = assert(loadfile(TEST_ROOT .. "/_meta.lua"))().version
+    local menu = {}
+    instance:addToMainMenu(menu)
+    for _, item in ipairs(menu.liuju.sub_item_table) do
+        if item.text == "在线更新" then
+            local version, check = unpack(item.sub_item_table)
+            eq(version.text_func(), "当前版本：" .. instance.version)
+            eq(version.enabled, false)
+            eq(check.text, "检查更新")
+            eq(instance._updater, nil)
+            return
+        end
+    end
+    error("online update menu missing")
+end)
+
 print(string.format("%d regression scenarios passed", test_count))
