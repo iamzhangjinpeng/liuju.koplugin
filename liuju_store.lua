@@ -84,7 +84,6 @@ function Store.new(root, state_root, book_id, width, height)
         dir = dir, book_dir = book_dir, state_root = state_root, book_id = book_id, width = width, height = height,
         index = index, skipped = type(skipped) == "table" and skipped or {},
         counts = index:readSetting("counts"),
-        fallback = state_root .. "/" .. book_id .. "-cover.png",
     }, Store)
 end
 
@@ -227,7 +226,7 @@ function Store:write(renderer, book, entry)
         os.remove(tmp)
         return nil, "invalid PNG"
     end
-    local target = entry and (self.dir .. "/" .. entry.filename) or self.fallback
+    local target = self.dir .. "/" .. entry.filename
     local renamed, err = os.rename(tmp, target)
     if not renamed then os.remove(tmp); return nil, "rename: " .. tostring(err) end
     return true

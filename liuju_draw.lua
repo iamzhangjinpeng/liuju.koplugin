@@ -3,7 +3,8 @@
 local BB = require("ffi/blitbuffer")
 local Font = require("ui/font")
 local TextBoxWidget = require("ui/widget/textboxwidget")
-local ImageWidget = require("ui/widget/imagewidget")
+local RenderImage = require("ui/renderimage")
+local base = debug.getinfo(1, "S").source:match("^@(.*/)") or "./"
 local Screen = require("device").screen
 local Draw = {}
 
@@ -36,21 +37,22 @@ function Draw:text(text, width, pixels, options)
     }
 end
 
-function Draw:cover_size(image)
-    if not image then return end
-    local width, height = image:getWidth(), image:getHeight()
-    if width > 0 and height > 0 then return width, height end
+function Draw:circle(canvas, x, y, radius, gray)
+    canvas:paintCircle(x, y, radius, BB.Color8(gray))
 end
 
-function Draw:cover(canvas, image, rect)
-    local widget = ImageWidget:new{
-        image = image, image_disposable = false,
-        width = rect.w, height = rect.h,
-    }
-    local ok, err = pcall(widget.paintTo, widget, canvas, rect.x, rect.y)
-    widget:free()
-    if not ok then error(err) end
-    return true
+function Draw:background(canvas, asset, width, height)
+    local source = assert(RenderImage:renderImageFile(base .. "assets/" .. asset, false),
+        "Cannot load wallpaper background")
+    local scaled
+    local ok, err = pcall(function()
+        scaled = assert(RenderImage:scaleBlitBuffer(source, width, height, false),
+            "Cannot scale wallpaper background")
+        canvas:blitFrom(scaled, 0, 0, 0, 0, width, height)
+    end)
+    if scaled and scaled ~= source then scaled:free() end
+    source:free()
+    if not ok then error(err, 0) end
 end
 
 return Draw

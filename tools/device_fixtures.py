@@ -71,7 +71,7 @@ def main():
     files = [build("liuju-test-a", "留句测试甲", sections, True),
              build("liuju-test-b-no-cover", "留句测试乙", [("另一本文字", "这是乙书。换书之后，不应再次看到甲书的摘录。")], False)]
     notes = OUT / "使用说明.txt"
-    notes.write_text("在甲书中划线短句、79/80/81字段落，再切换乙书并划线。\n默认80字下，81字段落不生成。乙书没有封面，应使用书名封面。\n具体步骤见仓库 docs/DEVICE-VALIDATION.md。\n")
+    notes.write_text("在甲书中划线短句、79/80/81字段落，再切换乙书并划线。\n默认80字下，81字段落不生成。乙书没有封面，也应能用标注生成小票。\n具体步骤见仓库 docs/DEVICE-VALIDATION.md。\n")
     archive = ROOT / "dist" / "liuju-device-fixtures.zip"
     with ZipFile(archive, "w", compression=ZIP_DEFLATED) as package:
         for file in [*files, notes]:

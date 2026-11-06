@@ -1,7 +1,7 @@
 local Core = {}
 local sha256 = require("ffi/sha2").sha256
 
-Core.LAYOUT_VERSION = "album-player-4"
+Core.LAYOUT_VERSION = "yiyan-receipts-1"
 Core.DEFAULT_LIMIT = 80
 
 local function whitespace(cp)

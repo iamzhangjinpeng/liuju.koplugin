@@ -107,13 +107,14 @@ test("A damaged screen settings backup restores its usable values and allows re-
     eq(policy:owns(), true)
 end)
 
+local GENERIC = "resources/koreader.png"
 local fixture_id = 0
 local real_dofile = dofile
 local function fixture()
     fixture_id = fixture_id + 1
     local f = { root = SCRATCH .. "/case-" .. fixture_id, queue = {}, indices = {}, writes = 0,
-        texts = {}, painted_texts = {}, rectangles = {}, frees = 0,
-        live_widgets = 0, live_covers = 0, live_images = 0, cover_reads = 0, flushes = 0, messages = {}, warnings = {},
+        texts = {}, painted_texts = {}, rectangles = {}, circles = {}, backgrounds = {},
+        live_widgets = 0, live_images = 0, cover_reads = 0, flushes = 0, messages = {}, warnings = {},
         saved_docs = {} }
     py_mkdir(f.root)
     local s = settings()
@@ -137,10 +138,15 @@ local function fixture()
         f.live_widgets = f.live_widgets + 1
         local freed = false
         f.texts[#f.texts+1] = text
-        local glyph_width = text:match("^[%z\1-\127]*$") and size / 2 or size
-        local columns, lines = math.max(1,math.floor(width/glyph_width)), 0
+        local lines = 0
         for line in (text.."\n"):gmatch("(.-)\n") do
-            lines = lines + math.max(1,math.ceil(#(Core.characters(line) or {})/columns))
+            lines = lines + 1
+            local used = 0
+            for _, char in ipairs(Core.characters(line) or {}) do
+                local glyph = char.cp <= 0xFF and size / 2 or size
+                if used > 0 and used + glyph > width then lines = lines + 1; used = 0 end
+                used = used + glyph
+            end
         end
         local line_height = math.floor(size*(1+(options.line_height or 0.48))+0.5)
         local visible = options.max_height and math.min(lines, math.max(1, math.floor(options.max_height/line_height))) or lines
@@ -162,8 +168,10 @@ local function fixture()
         rect = function(_,canvas,x,y,w,h,gray)
             f.rectangles[#f.rectangles+1]={x=x,y=y,w=w,h=h,gray=gray}
         end,
-        cover_size = function(_, image) if image then return 420, 600 end end,
-        cover = function() return false end,
+        background = function(_, _, name) f.backgrounds[#f.backgrounds + 1] = name end,
+        circle = function(_, _, x, y, radius, gray)
+            f.circles[#f.circles + 1] = { x = x, y = y, radius = radius, gray = gray }
+        end,
         canvas = function(_,w,h)
             return {
                 writePNG = function(_,path)
@@ -267,12 +275,7 @@ local function fixture()
         local ui={
             document={file=path,getCoverPageImage=function()
                 f.cover_reads = f.cover_reads + 1
-                f.live_covers = f.live_covers + 1
-                local freed=false
-                return {free=function()
-                    assert(not freed,"cover freed twice")
-                    freed=true;f.live_covers=f.live_covers-1
-                end}
+                error("receipts must never load the book cover")
             end},
             doc_props={title="测试书 "..name},
             doc_settings=doc_settings,
@@ -300,8 +303,8 @@ local function fixture()
         local n=0
         while self:step() do n=n+1;assert(n<2000,"scheduler did not become idle") end
         eq(self.live_widgets,0,"all text resources released")
-        eq(self.live_covers,0,"all cover resources released")
         eq(self.live_images,0,"all decoded images released")
+        eq(self.cover_reads, 0, "book covers are never requested")
     end
     function f:images(instance)
         local Store = real_dofile(TEST_ROOT.."/liuju_store.lua")
@@ -331,7 +334,7 @@ test("Open, render, repeat and edit use an incremental current-book pool", funct
     eq(#images,1);assert(images[1]~=old);eq(io.open(old,"rb"),nil)
     assert(not table.concat(f.texts,"\n"):find("2026.12",1,true))
 end)
-test("Lowering the limit, deleting annotations and empty books use the cover fallback",function()
+test("Lowering the limit, deleting annotations and empty books use the generic fallback",function()
     local f=fixture(); local row=annotation("1234567890")
     local a=f:reader("A",{row});f:drain()
     f.settings:saveSetting("liuju_character_limit",5)
@@ -346,10 +349,10 @@ end)
 test("Switching books cancels pending work and never selects the prior pool",function()
     local f=fixture()
     local a=f:reader("A",{annotation("旧书的句子"),annotation("还没生成的句子")})
-    f:step();f:step();f:step() -- start, fallback, first card
+    f:step();f:step();f:step() -- start, reconcile, first card
     local a_images=f:images(a);eq(#a_images,1)
     local b=f:reader("B",{annotation("新书的句子")})
-    eq(f.settings.data.screensaver_document_cover,b.ui.document.file)
+    eq(f.settings.data.screensaver_document_cover,GENERIC)
     assert(f.settings.data.screensaver_dir:match("/empty$"))
     f:drain()
     local b_images=f:images(b);eq(#b_images,1)
@@ -398,7 +401,7 @@ test("PNG writers without a return value still require a complete decodable imag
     local a = f:reader("A", { annotation("兼容旧版 PNG 写入接口") })
     f:drain()
     eq(#f:images(a), 0)
-    eq(a._last_stats.errors, 2)
+    eq(a._last_stats.errors, 1)
     eq(f.warnings[#f.warnings][2], "invalid PNG")
     f.fail_write = false
     a:onAnnotationsModified()
@@ -407,7 +410,6 @@ test("PNG writers without a return value still require a complete decodable imag
     eq(#images, 1)
     eq(a._last_stats.errors, 0)
     eq(f:select(images[1]), images[1])
-    assert(io.open(store.fallback, "rb")):close()
     eq(io.open(store:temp_path(), "rb"), nil)
 end)
 test("Reconciliation preserves unrelated files and disables itself on a provider change",function()
@@ -440,7 +442,6 @@ test("Enabling from the library immediately uses verified receipts from the last
     f:drain()
     local images, store = f:images(reader)
     eq(#images, 1)
-    store.index:delSetting("receipt_key") -- An existing cache can still use its cover key.
     reader:onCloseDocument()
 
     local library = f:manager()
@@ -500,9 +501,11 @@ test("The library hides receipts for annotations deleted while the plugin was di
     library:addToMainMenu(menu)
     menu.liuju.sub_item_table[1].callback()
     eq(f.settings.data.screensaver_type, "document_cover")
-    eq(f:select(), store.fallback)
+    eq(f:select(), GENERIC)
+    f.preview = nil
     library:_preview()
-    eq(f.preview, store.fallback)
+    eq(f.preview, nil)
+    eq(f.messages[#f.messages], "当前书暂无小票")
 end)
 
 test("Closing before generation records the current book; disabled startup restores a lease",function()
@@ -512,7 +515,7 @@ test("Closing before generation records the current book; disabled startup resto
     local b=f:reader("B",{})
     eq(f.settings.data.liuju_last_book.id,Core.book_id(b.ui.document.file))
     b:onCloseDocument();b:onCloseWidget()
-    eq(#f.queue,0);eq(f.settings.data.screensaver_document_cover,b.ui.document.file)
+    eq(#f.queue,0);eq(f.settings.data.screensaver_document_cover,GENERIC)
     f.settings.data.liuju_enabled=false
     f:reader("B",{});f:drain()
     eq(f.settings.data.screensaver_type,"message")
@@ -524,7 +527,7 @@ test("Unsupported annotation APIs are reported and never treated as an empty mig
     f:drain()
     eq(#f.messages,1)
     assert(f.messages[1]:find("KOReader",1,true))
-    eq(f.settings.data.screensaver_document_cover,a.ui.document.file)
+    eq(f.settings.data.screensaver_document_cover,GENERIC)
     eq(a._job,nil)
 end)
 test("Sleep detects silent edits before choosing an image and resumes the pending update", function()
@@ -539,7 +542,7 @@ test("Sleep detects silent edits before choosing an image and resumes the pendin
     eq(#f.queue, 0)
     local image, kind = f:select(old)
     eq(kind, "cover")
-    assert(image:match("%-cover%.png$"))
+    eq(image, GENERIC)
     a:onSuspend()
     eq(#f.queue, 0)
     a:onResume()
@@ -593,7 +596,7 @@ test("A failed repair leaves only valid eligible images in the selected pool", f
     local foreign = store.dir .. "/other.png"
     py_png(foreign, 1072, 1448)
     local selected = f:select(images[1])
-    eq(selected, store.fallback)
+    eq(selected, GENERIC)
     f.fail_write = true
     f:drain()
     eq(f.settings.data.screensaver_dir, store.dir)
@@ -629,14 +632,13 @@ test("Batch generation only writes changed settings and an unchanged wake is idl
     local a = f:reader("A", rows)
     f:drain()
     eq(#f:images(a), 12)
-    eq(f.flushes, 4, "backup, raw cover, generated cover, random pool")
-    local flushes, reads, writes = f.flushes, f.cover_reads, f.writes
+    eq(f.flushes, 4, "recent book, backup, generic, random pool")
+    local flushes, writes = f.flushes, f.writes
     eq(f:select(f:images(a)[1]), f:images(a)[1])
     a:onSuspend()
     a:onResume()
     eq(#f.queue, 0)
     eq(f.flushes, flushes)
-    eq(f.cover_reads, reads)
     eq(f.writes, writes)
 end)
 test("Closing after a silent edit removes the stale card while keeping other eligible cards", function()
@@ -665,7 +667,7 @@ test("Closing a freshly reopened book restores its verified random pool without 
     local a = f:reader("A", rows)
     f:drain()
     local old = f:images(a)[1]
-    local reads, writes = f.cover_reads, f.writes
+    local writes = f.writes
     a:onCloseDocument()
     a:onCloseWidget()
     f:manager()
@@ -677,7 +679,6 @@ test("Closing a freshly reopened book restores its verified random pool without 
     eq(#f.queue, 0)
     eq(f.settings.data.screensaver_type, "random_image")
     eq(f:select(old), old)
-    eq(f.cover_reads, reads)
     eq(f.writes, writes)
 end)
 test("Lowering the limit in the library filters both the screensaver pool and preview", function()
@@ -697,8 +698,10 @@ test("Lowering the limit in the library filters both the screensaver pool and pr
     manager:_set_limit(1)
     eq(#f:images(a), 0)
     eq(f.settings.data.screensaver_type, "document_cover")
+    f.preview = nil
     manager:_preview()
-    eq(f.preview, store.fallback)
+    eq(f.preview, nil)
+    eq(f.messages[#f.messages], "当前书暂无小票")
 end)
 test("After a lower limit, legacy cards wait for the next verified open", function()
     local f = fixture()
@@ -712,8 +715,10 @@ test("After a lower limit, legacy cards wait for the next verified open", functi
     local manager = f:manager()
     manager:_set_limit(2)
     eq(f.settings.data.screensaver_type, "document_cover")
+    f.preview = nil
     manager:_preview()
-    eq(f.preview, store.fallback)
+    eq(f.preview, nil)
+    eq(f.messages[#f.messages], "当前书暂无小票")
     assert(io.open(images[1], "rb")):close()
     local reopened = f:reader("A", rows)
     f:drain()
@@ -727,7 +732,7 @@ test("Corrupt PNG image data is rejected on selection and repaired on ordinary s
     local images, store = f:images(a)
     local path = images[1]
     py_corrupt_png_data(path)
-    eq(f:select(path), store.fallback)
+    eq(f:select(path), GENERIC)
     eq(io.open(path, "rb"), nil)
     f:drain()
     eq(f:select(path), path)
@@ -738,16 +743,18 @@ test("Corrupt PNG image data is rejected on selection and repaired on ordinary s
     eq(f.writes, writes + 1)
     eq(f:select(path), path)
 end)
-test("A damaged generated cover is replaced when a book has no eligible cards", function()
+test("An empty book uses the generic screen and detects the first silent annotation", function()
     local f = fixture()
     local a = f:reader("A", {})
     f:drain()
-    local cover = f.settings.data.screensaver_document_cover
-    py_corrupt_png_data(cover)
-    eq(f:select(), "resources/koreader.png")
+    eq(f.writes, 0)
+    eq(f:select(), GENERIC)
+    a.ui.annotation.annotations[1] = annotation("刚划下的句子")
+    eq(f:select(), GENERIC)
     f:drain()
-    eq(f:select(), cover)
-    eq(f.settings.data.screensaver_type, "document_cover")
+    local images = f:images(a)
+    eq(#images, 1)
+    eq(f:select(images[1]), images[1])
 end)
 test("Deleted and unverified recent books cannot expose cached cards in the library", function()
     local f = fixture()
@@ -775,7 +782,7 @@ test("Replacing a book at the same path suppresses its old cache before regenera
     local a = f:reader("A", { annotation("原来的书") })
     f:drain()
     local images, store = f:images(a)
-    local old_cover_source = store.index:readSetting("cover_source")
+    local old_receipt_key = store.index:readSetting("receipt_key")
     a:onCloseDocument()
     a:onCloseWidget()
     local manager = f:manager()
@@ -789,10 +796,10 @@ test("Replacing a book at the same path suppresses its old cache before regenera
     manager:_preview()
     eq(f.preview, nil)
     local b = f:reader("A", { annotation("替换后的书") })
-    eq(f:select(), source)
-    eq(store.index:readSetting("cover_source"), old_cover_source)
+    eq(f:select(), GENERIC)
+    eq(store.index:readSetting("receipt_key"), old_receipt_key)
     f:drain()
-    assert(store.index:readSetting("cover_source") ~= old_cover_source)
+    assert(store.index:readSetting("receipt_key") ~= old_receipt_key)
     assert(f:images(b)[1] ~= images[1])
 end)
 test("Sync keeps the identity of the open document after its file is replaced", function()
@@ -968,7 +975,8 @@ test("An incomplete index hides unknown images in the library and repairs on reo
     a:onCloseDocument()
     a:onCloseWidget()
     f:manager():_preview()
-    eq(f.preview, store.fallback)
+    eq(f.preview, nil)
+    eq(f.messages[#f.messages], "当前书暂无小票")
     local reopened = f:reader("A", rows)
     f:drain()
     eq(f:images(reopened)[1], images[1])
@@ -1009,7 +1017,7 @@ test("Sleep rejects a decodable managed-name card missing from the current book'
     assert(output:write(input:read("*a")))
     input:close()
     output:close()
-    eq(f:select(foreign), store.fallback)
+    eq(f:select(foreign), GENERIC)
     f:drain()
     eq(f:select(images[1]), images[1])
     eq(io.open(foreign, "rb"), nil)
@@ -1052,7 +1060,7 @@ test("Character screening handles long quotes and combined notes without a chara
     eq(entries[1].note, "丙\n丁")
     eq(entries[1].count, 4)
 end)
-test("Preview identifies current-book receipts, pending generation, and a cover without receipts", function()
+test("Preview identifies current-book receipts, pending generation, and no eligible receipts", function()
     local f = fixture()
     local reader = f:reader("A", { annotation("正在生成的小票") })
     local menu = {}
@@ -1066,11 +1074,10 @@ test("Preview identifies current-book receipts, pending generation, and a cover 
     preview()
     eq(f.messages[#f.messages], "当前书的小票生成中")
     eq(f.preview, nil)
-    assert(f:step() and f:step(), "cover should render before receipts")
-    local _, store = f:images(reader)
+    assert(f:step() and f:step(), "prepare the pool before drawing")
     preview()
-    eq(f.preview, store.fallback)
-    eq(f.preview_title, "当前书的小票生成中")
+    eq(f.preview, nil)
+    eq(f.messages[#f.messages], "当前书的小票生成中")
 
     f:drain()
     preview()
@@ -1079,10 +1086,10 @@ test("Preview identifies current-book receipts, pending generation, and a cover 
 
     local empty = f:reader("B", { annotation(string.rep("长", 81)) })
     f:drain()
-    local _, empty_store = f:images(empty)
+    f.preview = nil
     empty:_preview()
-    eq(f.preview, empty_store.fallback)
-    eq(f.preview_title, "当前书暂无小票")
+    eq(f.preview, nil)
+    eq(f.messages[#f.messages], "当前书暂无小票")
 end)
 
 test("A temporarily unreadable cache reports an unknown preview state and can be retried", function()
@@ -1129,7 +1136,8 @@ test("Preview ignores a silently edited note until its new wallpaper is ready", 
     local images, store = f:images(a)
     row.note = "编辑后"
     a:_preview()
-    eq(f.preview, store.fallback)
+    eq(f.preview, nil)
+    eq(f.messages[#f.messages], "当前书的小票生成中")
     f:drain()
     a:_preview()
     assert(f.preview ~= images[1])
@@ -1142,7 +1150,7 @@ test("Quote and note bitmaps stay bounded when eligible text contains thousands 
     f:drain()
     eq(a._last_stats.layout, 2)
     eq(#f:images(a), 0)
-    local layout = real_dofile(TEST_ROOT.."/liuju_layout.lua").for_screen(1072,1448)
+    local layout = real_dofile(TEST_ROOT.."/liuju_layout.lua").for_screen(1072,1448,"classic")
     assert(f.max_bitmap_height <= layout.body.h)
 end)
 test("A large cached pool is verified across callbacks and closing avoids bulk decodes", function()
@@ -1162,7 +1170,7 @@ test("A large cached pool is verified across callbacks and closing avoids bulk d
         assert(f.decodes - start <= 1, "bulk decode in one callback")
     end
     f:drain()
-    eq(f.decodes - before, 121)
+    eq(f.decodes - before, 120)
     eq(reopened._last_stats.cached, 120)
     eq(f.writes, writes)
     reopened:onCloseDocument()
@@ -1170,15 +1178,15 @@ test("A large cached pool is verified across callbacks and closing avoids bulk d
     local quick = f:reader("A", rows)
     before = f.decodes
     quick:onCloseDocument()
-    eq(f.decodes - before, 1, "closing only checks the cover")
+    eq(f.decodes - before, 0, "closing does not decode the pool")
     eq(f.settings.data.screensaver_type, "random_image")
 end)
 test("Titles keep all characters when they fit and ellipsize only on overflow", function()
-    local layout = real_dofile(TEST_ROOT.."/liuju_layout.lua").for_screen(1072,1448)
+    local layout = real_dofile(TEST_ROOT.."/liuju_layout.lua").for_screen(1072,1448,"classic")
     for _, suffix in ipairs({ "", string.rep(" Extra words", 12) }) do
         local f = fixture()
         local a = f:reader("A", { annotation("短摘录") })
-        local title = "A Quiet Place to Read: Notes on Attention and Everyday Life" .. suffix
+        local title = "A Quiet Place to Read" .. suffix
         a.ui.doc_props.title = title
         f:drain()
         local painted
@@ -1186,73 +1194,172 @@ test("Titles keep all characters when they fit and ellipsize only on overflow", 
             if item.x == layout.title.x and item.y >= layout.footer.y then painted = item.text end
         end
         assert(painted)
-        if suffix == "" then eq(painted, title)
-        else assert(painted:match("…$") and #painted < #title) end
+        local date = "  ·  2026.11.03"
+        if suffix == "" then eq(painted, title .. date)
+        else assert(painted:sub(-#date) == date and painted:find("…" .. date, 1, true)) end
     end
 end)
-test("Poster straddles the black footer with the cover and centers the title beside it",function()
-    local layout=real_dofile(TEST_ROOT.."/liuju_layout.lua")
-    for _,size in ipairs({{1072,1448,420,600},{600,800,300,300},{1448,1072,600,420}}) do
-        local l=layout.for_screen(size[1],size[2],size[3],size[4])
-        eq(l.footer.x,0);eq(l.footer.w,l.width);eq(l.footer.y+l.footer.h,l.height)
-        assert(l.body.y<l.height*0.25)
-        assert(l.body.y+l.body.h<l.album.y)
-        assert(l.body.y+l.body.h+l.date_gap+math.ceil(l.date_size*1.48)<l.album.y)
-        assert(l.album.x<l.width*0.25 and l.album.x+l.album.w<l.title.x)
-        eq(l.title.x-l.album.x-l.album.w,l.width-l.title.x-l.title.w)
-        assert(math.abs((2*l.title.y+l.title.h)-(2*l.footer.y+l.footer.h))<=1)
-        eq(l.footer.y-l.album.y,math.floor(l.album.h/2))
-        eq(l.footer.y-l.cover.y,math.floor(l.cover.h/2))
-        local frame=l.cover.x-l.album.x
-        eq(l.cover.y-l.album.y,frame)
-        eq(l.album.w-l.cover.w,2*frame)
-        eq(l.album.h-l.cover.h,2*frame)
-        assert(math.abs(l.cover.w-l.cover.h*size[3]/size[4])<=2)
+local function wallpaper_menu(instance)
+    local menu = {}
+    instance:addToMainMenu(menu)
+    for _, item in ipairs(menu.liuju.sub_item_table) do
+        if item.text == "壁纸样式" then return item.sub_item_table, menu.liuju.sub_item_table[1] end
     end
-    local f=fixture();local a=f:reader("A",{annotation("正文在上方")});f:drain()
-    local l=layout.for_screen(1072,1448)
-    local title_seen,body_seen,footer_seen,frame_seen=false,false,false,false
-    for _,paint in ipairs(f.painted_texts) do
-        if paint.text=="测试书 A" and paint.x==l.title.x then
-            eq(paint.options.gray,255);eq(paint.options.bgcolor,0)
-            eq(paint.options.align,"center")
-            local line_height=math.floor(l.title_size*(1+paint.options.line_height)+0.5)
-            eq(paint.y,l.title.y+math.floor((l.title.h-line_height)/2))
-            title_seen=true
-        elseif paint.text=="正文在上方" then
-            eq(paint.x,l.body.x);eq(paint.y,l.body.y);body_seen=true
+    error("wallpaper style menu missing")
+end
+
+test("Wallpaper menu persists a single style and replaces a running generation", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("样式切换", nil, "2026-11-06 08:00:00") })
+    f:drain()
+    local original, store = f:images(a)
+    local styles = wallpaper_menu(a)
+    eq(#styles, 3)
+    eq(styles[1].checked_func(), true)
+    styles[2].callback()
+    eq(styles[1].checked_func(), false)
+    eq(styles[2].checked_func(), true)
+    eq(f:select(original[1]), GENERIC)
+    a:_preview()
+    eq(f.preview, nil)
+    assert(f:step() and f:step(), "calendar preparation started")
+    styles[3].callback()
+    f:drain()
+    local current = f:images(a)
+    eq(#current, 1)
+    assert(current[1] ~= original[1])
+    eq(io.open(original[1], "rb"), nil)
+    eq(f.backgrounds[2], "dark-card-background.png")
+    eq(f:select(current[1]), current[1])
+    assert(store.index:readSetting("receipt_key"):find("/dark/", 1, true))
+    local seen = false
+    for _, item in ipairs(f.painted_texts) do
+        if item.text == "11.06  /  FRI" then seen = true end
+    end
+    assert(seen, "dark card uses annotation date, not generation day")
+    f:reader("B", { annotation("另一本文字") })
+    f:drain()
+    eq(f.backgrounds[3], "dark-card-background.png")
+end)
+
+test("Library regenerates saved annotations when style changes and after re-enabling", function()
+    local f = fixture()
+    local reader = f:reader("A", { annotation("旧原文") })
+    f:drain()
+    local old = f:images(reader)[1]
+    reader:onCloseDocument()
+    local library = f:manager()
+    local styles, toggle = wallpaper_menu(library)
+    toggle.callback()
+    local saved = f.saved_docs[reader.ui.document.file]
+    saved:saveSetting("annotations", { { note = "书库使用已保存的笔记", datetime = "2026-11-06" } })
+    styles[2].callback()
+    eq(f.settings.data.liuju_wallpaper_style, "calendar")
+    eq(#f.queue, 0)
+    toggle.callback()
+    eq(f:select(old), GENERIC)
+    f:drain()
+    local current = f:images(reader)
+    eq(#current, 1)
+    eq(f.backgrounds[2], "date-card-background.png")
+    eq(f:select(current[1]), current[1])
+    library:_preview()
+    eq(f.preview, current[1])
+    local seen = {}
+    for _, item in ipairs(f.painted_texts) do seen[item.text] = true end
+    assert(seen["书库使用已保存的笔记"] and seen["星期五"])
+    styles[1].callback()
+    local restarted_library = f:manager()
+    f:drain()
+    eq(f.backgrounds[3], "lyrics-background.png")
+    eq(f:select(f:images(reader)[1]), f:images(reader)[1])
+    restarted_library:deletePluginSettings()
+    eq(f.settings.data.liuju_wallpaper_style, nil)
+end)
+
+test("Pre-style cache and legacy cover paths stay hidden until regenerated", function()
+    local f = fixture()
+    local reader = f:reader("A", { annotation("旧版小票") })
+    f:drain()
+    local paths, store = f:images(reader)
+    store.index:saveSetting("receipt_key", "album-player-4")
+    local library = f:manager()
+    eq(f:select(paths[1]), GENERIC)
+    library:_preview()
+    eq(f.preview, nil)
+    library.policy:apply{ dir = library.empty_dir, image = reader.ui.document.file }
+    eq(f:select(), GENERIC)
+    local new_reader = f:reader("A", { annotation("旧版小票") })
+    f:drain()
+    eq(f:select(f:images(new_reader)[1]), f:images(new_reader)[1])
+end)
+
+test("Phrase breaks keep closing quotes and existing newlines intact", function()
+    local f = fixture()
+    f:reader("A", { annotation("先读。”\n再想；最后再读。") })
+    f:drain()
+    local expected = "先读。”\n再想；\n最后再读。"
+    for _, item in ipairs(f.painted_texts) do
+        if item.text == expected then return end
+    end
+    error("quote punctuation or existing line breaks changed")
+end)
+
+test("Classic wallpaper keeps the original disc and puts title and date on one line", function()
+    local layout = real_dofile(TEST_ROOT .. "/liuju_layout.lua")
+    for _, size in ipairs({ {1072, 1448}, {600, 800} }) do
+        local l = layout.for_screen(size[1], size[2], "classic")
+        eq(l.disc.y, l.footer.y)
+        eq(l.footer.y + l.footer.h, l.height)
+        assert(l.body.y + l.body.h < l.disc.y - l.disc.radius)
+        assert(l.disc.x + l.disc.radius < l.title.x)
+    end
+    local f = fixture()
+    f:reader("A", { annotation("正文在上方") })
+    f:drain()
+    local l = layout.for_screen(1072, 1448, "classic")
+    eq(f.backgrounds[1], "lyrics-background.png")
+    eq(#f.circles, 6)
+    eq(f.circles[1].radius, l.disc.radius)
+    eq(f.circles[1].y, l.footer.y)
+    eq(f.circles[1].gray, 255)
+    eq(f.circles[2].gray, 0)
+    eq(f.rectangles[1].y, l.footer.y)
+    eq(f.rectangles[1].gray, 0)
+    local footer_count = 0
+    for _, item in ipairs(f.painted_texts) do
+        if item.y >= l.footer.y then
+            footer_count = footer_count + 1
+            eq(item.text, "测试书 A  ·  2026.11.03")
+            eq(item.options.align, "center")
         end
     end
-    for _,rect in ipairs(f.rectangles) do
-        if rect.x==0 and rect.y==l.footer.y and rect.w==l.width and rect.gray==0 then footer_seen=true end
-        if rect.x==l.album.x and rect.y==l.album.y and rect.w==l.album.w and rect.h==l.album.h and rect.gray==0 then
-            frame_seen=true
-        end
-    end
-    assert(title_seen and body_seen and footer_seen and frame_seen)
+    eq(footer_count, 1)
 end)
-test("Production drawing adapter applies DPI once and paints the fitted cover rectangle",function()
-    local raw_size, image_args, image_freed, painted_x, painted_y
-    package.loaded["device"]={screen={scaleBySize=function(_,value)return value*2 end}}
-    package.loaded["ffi/blitbuffer"]={Color8=function(v)return v end,COLOR_WHITE=255}
-    package.loaded["ui/font"]={getFace=function(_,name,size)raw_size=size;return{size=size*2}end}
-    package.loaded["ui/widget/textboxwidget"]={new=function(_,args)return args end}
-    package.loaded["ui/widget/imagewidget"]={new=function(_,args)
-        image_args=args
-        return{paintTo=function(_,_,x,y)painted_x,painted_y=x,y end,free=function()image_freed=true end}
-    end}
-    local draw=real_dofile(TEST_ROOT.."/liuju_draw.lua")
-    local widget=draw:text("文字",772,46)
-    eq(raw_size,23);eq(widget.face.size,46);eq(widget.height,nil,"no native clipping height")
-    local white=draw:text("白字书名",572,40,{gray=255,bgcolor=0,max_height=120})
-    eq(white.fgcolor,255);eq(white.bgcolor,0)
-    eq(white.height,120);eq(white.height_adjust,true)
-    local image = {getWidth=function()return 420 end,getHeight=function()return 600 end}
-    local width,height=draw:cover_size(image)
-    eq(width,420);eq(height,600)
-    assert(draw:cover({}, image, {x=146,y=181,w=179,h=256}))
-    eq(image_args.width,179);eq(image_args.height,256)
-    eq(painted_x,146);eq(painted_y,181)
-    eq(image_args.image_disposable,false);assert(image_freed)
+
+test("Production adapter applies DPI once and frees scaled and unscaled backgrounds", function()
+    local raw_size, decoded_path, blitted
+    local source = { free = function(self) self.freed = (self.freed or 0) + 1 end }
+    local scaled = { free = source.free }
+    package.loaded["device"] = { screen = { scaleBySize = function(_, value) return value * 2 end } }
+    package.loaded["ffi/blitbuffer"] = { Color8 = function(v) return v end, COLOR_WHITE = 255 }
+    package.loaded["ui/font"] = { getFace = function(_, _, size) raw_size = size; return { size = size * 2 } end }
+    package.loaded["ui/widget/textboxwidget"] = { new = function(_, args) return args end }
+    package.loaded["ui/renderimage"] = {
+        renderImageFile = function(_, path) decoded_path = path; return source end,
+        scaleBlitBuffer = function(_, image, w, h, free)
+            eq(image, source); eq(w, 1072); eq(h, 1448); eq(free, false)
+            return scaled
+        end,
+    }
+    local draw = real_dofile(TEST_ROOT .. "/liuju_draw.lua")
+    local widget = draw:text("文字", 772, 46, { max_height = 120, gray = 255, bgcolor = 0 })
+    eq(raw_size, 23); eq(widget.face.size, 46)
+    eq(widget.height, 120); eq(widget.height_adjust, true)
+    eq(widget.fgcolor, 255); eq(widget.bgcolor, 0)
+    draw:background({ blitFrom = function(_, image) blitted = image end }, "lyrics-background.png", 1072, 1448)
+    assert(decoded_path:match("/assets/lyrics%-background%.png$"))
+    eq(blitted, scaled); eq(scaled.freed, 1); eq(source.freed, 1)
 end)
-print(string.format("%d regression scenarios passed",test_count))
+
+print(string.format("%d regression scenarios passed", test_count))
