@@ -96,6 +96,19 @@ function Core.pack(values)
     return table.concat(result)
 end
 
+function Core.unpack_fields(value, count)
+    if type(value) ~= "string" then return end
+    local fields, offset = {}, 1
+    for i = 1, count do
+        local size, first = value:match("^(%d+):()", offset)
+        if not size or #size > 9 then return end
+        offset = first + tonumber(size)
+        if offset > #value + 1 then return end
+        fields[i] = value:sub(first, offset - 1)
+    end
+    return fields
+end
+
 local function position(value, depth)
     if type(value) ~= "table" then return tostring(value or "") end
     if (depth or 0) > 5 then return "" end

@@ -71,6 +71,12 @@ function Store.open_index(state_root, book_id)
     return index
 end
 
+function Store.save_book_digest(state_root, index, digest)
+    directory(state_root)
+    index:saveSetting("book_digest", digest)
+    if index:flush() == false then error("Cannot save book identity") end
+end
+
 function Store.new(root, state_root, book_id, width, height)
     local index = Store.open_index(state_root, book_id)
     directory(root)
@@ -108,7 +114,9 @@ function Store.decode_candidate(dir, path, width, height)
 end
 
 function Store.discard_candidate(dir, path)
-    if is_candidate(dir, path) then remove(path) end
+    if not is_candidate(dir, path) then return false end
+    remove(path)
+    return true
 end
 
 function Store:verify_cached(name)
@@ -138,7 +146,12 @@ function Store:_exclude(path, name)
     assert(ok, "Cannot move foreign wallpaper: " .. tostring(err))
 end
 
-function Store:reconcile(entries, force, receipt_key)
+function Store:has_cached(name)
+    local path = self.dir .. "/" .. name
+    return is_candidate(self.dir, path) and valid_png_header(path, self.width, self.height)
+end
+
+function Store:reconcile(entries, force, receipt_key, book_digest)
     local counts, skipped, available = {}, {}, {}
     for _, item in ipairs(entries) do
         counts[item.filename] = item.count
@@ -176,8 +189,10 @@ function Store:reconcile(entries, force, receipt_key)
     end
     self.skipped = skipped
     local key_changed = receipt_key and self.index:readSetting("receipt_key") ~= receipt_key
+    local digest_changed = book_digest and self.index:readSetting("book_digest") ~= book_digest
     if key_changed then self.index:saveSetting("receipt_key", receipt_key) end
-    if key_changed or not same_counts(self.counts, counts) then
+    if digest_changed then self.index:saveSetting("book_digest", book_digest) end
+    if key_changed or digest_changed or not same_counts(self.counts, counts) then
         self.counts = counts
         self.index:saveSetting("counts", counts)
         self:save_index()

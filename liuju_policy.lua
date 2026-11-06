@@ -46,11 +46,16 @@ function Policy:_restore_owned(lease)
             or type(lease.backup) ~= "table" or type(lease.applied) ~= "table" then return end
     local current_type = self.settings:readSetting("screensaver_type")
     local target_key = target_keys[current_type]
-    local changed_active_target = target_key and self.settings:readSetting(target_key) ~= lease.applied[target_key]
+    -- Another provider can set the same stretch/message values. Once the
+    -- active target changes, those values no longer prove we own any setting.
+    if (lease.applied.screensaver_type and current_type ~= lease.applied.screensaver_type)
+            or (target_key and lease.applied[target_key] ~= nil
+                and self.settings:readSetting(target_key) ~= lease.applied[target_key]) then
+        return
+    end
     for _, key in ipairs(keys) do
         local applied, saved = lease.applied[key], lease.backup[key]
-        if applied ~= nil and valid_backup(saved) and self.settings:readSetting(key) == applied
-                and (key ~= "screensaver_type" or not changed_active_target) then
+        if applied ~= nil and valid_backup(saved) and self.settings:readSetting(key) == applied then
             if saved.present then self.settings:saveSetting(key, saved.value)
             else self.settings:delSetting(key) end
         end

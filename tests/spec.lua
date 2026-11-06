@@ -73,6 +73,9 @@ test("Cache identity survives table order and distinguishes absent dates/positio
     eq(#Core.collect({a,b},80,"same"),2)
     assert(Core.pack({"a",nil,"b"}) ~= Core.pack({"a","b"}))
     assert(Core.pack({false}) ~= Core.pack({""}))
+    local unpacked = assert(Core.unpack_fields(Core.pack({ "a:b", "", "书" }), 3))
+    eq(unpacked[1], "a:b"); eq(unpacked[2], ""); eq(unpacked[3], "书")
+    eq(Core.unpack_fields("10:short", 1), nil)
 end)
 test("Screen settings restore unset values and preserve a later provider choice", function()
     local s = settings({screensaver_type="cover",screensaver_show_message=true})
@@ -132,6 +135,7 @@ local function fixture()
             f.preview_title = widget.title_text
         end
         if widget.text then f.messages[#f.messages+1] = widget.text end
+        if widget.ok_callback then f.confirmation = widget end
     end
     local function textwidget(text, width, size, options)
         options = options or {}
@@ -216,6 +220,7 @@ local function fixture()
         end },
         ["ui/widget/imageviewer"] = {new=function(_,t) return t end},
         ["ui/widget/infomessage"] = {new=function(_,t)return t end},
+        ["ui/widget/confirmbox"] = {new=function(_,t)return t end},
         ["datastorage"] = {getDataDir=function() return f.root end,getSettingsDir=function() return f.root.."/settings" end},
         ["docsettings"] = {open = function(_, path) return f.saved_docs[path] or settings() end},
         ["device"] = {
@@ -286,6 +291,14 @@ local function fixture()
         instance:init()
         self.instance=instance
         return instance
+    end
+    function f:update(instance)
+        local menu = {}
+        instance:addToMainMenu(menu)
+        for _, item in ipairs(menu.liuju.sub_item_table) do
+            if item.text == "更新当前书的小票" then return item.callback() end
+        end
+        error("update menu missing")
     end
     function f:select(path, event)
         self.next_image = path
@@ -575,16 +588,37 @@ test("Changing stretch restores the former screensaver without discarding the us
     eq(f.settings.data.screensaver_type, "cover")
     eq(f.settings.data.screensaver_dir, "/previous")
 end)
-test("Changing the active random folder retains random mode when yielding ownership", function()
-    local s = settings({ screensaver_type = "cover", screensaver_show_message = true })
+test("Taking over the random directory preserves the new provider's display settings", function()
+    local s = settings({ screensaver_type = "cover", screensaver_show_message = true,
+        screensaver_stretch_images = false })
     local p = Policy.new(s)
     assert(p:apply{ dir = "/liuju" })
-    s.data.screensaver_dir = "/new-folder"
+    s.data.screensaver_dir = "/yiyan/.yiyan-screen/"
+    s.data.screensaver_stretch_images = true
+    s.data.screensaver_show_message = false
     eq(p:check(), false)
     eq(s.data.screensaver_type, "random_image")
-    eq(s.data.screensaver_dir, "/new-folder")
-    eq(s.data.screensaver_show_message, true)
+    eq(s.data.screensaver_dir, "/yiyan/.yiyan-screen/")
+    eq(s.data.screensaver_show_message, false)
+    eq(s.data.screensaver_stretch_images, true)
+    eq(s.data[Policy.LEASE], nil)
+    eq(p:enabled(), false)
 end)
+
+test("Stopping Liuju after another mode takes over leaves that mode and its settings intact", function()
+    local s = settings({ screensaver_type = "cover", screensaver_show_message = true,
+        screensaver_stretch_images = false })
+    local p = Policy.new(s)
+    assert(p:apply{ dir = "/liuju" })
+    s.data.screensaver_type = "document_cover"
+    s.data.screensaver_document_cover = "/external.png"
+    p:restore(true)
+    eq(s.data.screensaver_type, "document_cover")
+    eq(s.data.screensaver_document_cover, "/external.png")
+    eq(s.data.screensaver_show_message, false)
+    eq(s.data.screensaver_stretch_images, true)
+end)
+
 test("A failed repair leaves only valid eligible images in the selected pool", function()
     local f = fixture()
     local a = f:reader("A", { annotation("甲"), annotation("乙") })
@@ -652,7 +686,7 @@ test("Closing after a silent edit removes the stale card while keeping other eli
     a:onCloseDocument()
     a:onCloseWidget()
     f:manager()
-    eq(#f.queue, 0)
+    eq(#f.queue, 1)
     eq(f.writes, writes, "closing never draws new images")
     local after = f:images(a)
     eq(#after, 1)
@@ -660,6 +694,9 @@ test("Closing after a silent edit removes the stale card while keeping other eli
     eq(f:select(after[1]), after[1])
     local stale = before[1] == after[1] and before[2] or before[1]
     eq(io.open(stale, "rb"), nil)
+    f:drain()
+    eq(#f:images(a), 2)
+    eq(f.writes, writes + 1)
 end)
 test("Closing a freshly reopened book restores its verified random pool without drawing", function()
     local f = fixture()
@@ -703,7 +740,7 @@ test("Lowering the limit in the library filters both the screensaver pool and pr
     eq(f.preview, nil)
     eq(f.messages[#f.messages], "当前书暂无小票")
 end)
-test("After a lower limit, legacy cards wait for the next verified open", function()
+test("A library repair reapplies a lower limit before recovering an incomplete index", function()
     local f = fixture()
     local rows = { annotation("旧图") }
     local a = f:reader("A", rows)
@@ -718,11 +755,10 @@ test("After a lower limit, legacy cards wait for the next verified open", functi
     f.preview = nil
     manager:_preview()
     eq(f.preview, nil)
-    eq(f.messages[#f.messages], "当前书暂无小票")
+    eq(f.messages[#f.messages], "当前书的小票生成中")
     assert(io.open(images[1], "rb")):close()
-    local reopened = f:reader("A", rows)
     f:drain()
-    eq(f:images(reopened)[1], images[1])
+    eq(f:images(a)[1], images[1])
     eq(f.settings.data.screensaver_type, "random_image")
 end)
 test("Corrupt PNG image data is rejected on selection and repaired on ordinary sync", function()
@@ -799,6 +835,11 @@ test("Replacing a book at the same path suppresses its old cache before regenera
     eq(f:select(), GENERIC)
     eq(store.index:readSetting("receipt_key"), old_receipt_key)
     f:drain()
+    eq(store.index:readSetting("receipt_key"), old_receipt_key)
+    f:update(b)
+    assert(f.confirmation)
+    f.confirmation.ok_callback()
+    f:drain()
     assert(store.index:readSetting("receipt_key") ~= old_receipt_key)
     assert(f:images(b)[1] ~= images[1])
 end)
@@ -830,6 +871,10 @@ test("Sync keeps the identity of the open document after its file is replaced", 
     manager:_preview()
     eq(f.preview, nil)
     local b = f:reader("A", { annotation("新书的摘录") })
+    f:drain()
+    eq(f.writes, writes)
+    f:update(b)
+    f.confirmation.ok_callback()
     f:drain()
     assert(f:images(b)[1] ~= old)
 end)
@@ -962,7 +1007,7 @@ test("Sleep falls back safely when the index is malformed or a validator throws"
     f.settings.data.screensaver_document_cover = "/my-wallpaper.png"
     eq(f:select(), "/my-wallpaper.png")
 end)
-test("An incomplete index hides unknown images in the library and repairs on reopening", function()
+test("An incomplete index hides unknown images and repairs in the library", function()
     local f = fixture()
     local rows = { annotation("有效小票") }
     local a = f:reader("A", rows)
@@ -976,10 +1021,9 @@ test("An incomplete index hides unknown images in the library and repairs on reo
     a:onCloseWidget()
     f:manager():_preview()
     eq(f.preview, nil)
-    eq(f.messages[#f.messages], "当前书暂无小票")
-    local reopened = f:reader("A", rows)
+    eq(f.messages[#f.messages], "当前书的小票生成中")
     f:drain()
-    eq(f:images(reopened)[1], images[1])
+    eq(f:images(a)[1], images[1])
     eq(f:select(images[1]), images[1])
     assert(io.open(store.book_dir .. "/excluded/" .. foreign, "rb")):close()
 end)
@@ -1111,22 +1155,47 @@ test("A temporarily unreadable cache reports an unknown preview state and can be
     eq(f.preview, images[1])
 end)
 
-test("Preview never borrows the last book's images when the current book has no cache", function()
+test("Opening a book while disabled makes it the only candidate for library re-enable", function()
     local f = fixture()
     local a = f:reader("A", { annotation("甲书内容") })
     f:drain()
-    local old = f:images(a)[1]
+    local old, writes = f:images(a)[1], f.writes
     a.policy:restore(true)
     a:onCloseDocument()
-    a:onCloseWidget()
     local b = f:reader("B", { annotation("乙书内容") })
     b:_preview()
     eq(f.preview, nil)
     eq(f.messages[#f.messages], "当前书暂无小票")
+    eq(f.settings.data.liuju_last_book.file, b.ui.document.file)
+    eq(f.writes, writes)
     b:onCloseDocument()
-    b:onCloseWidget()
-    f:manager():_preview()
-    eq(f.preview, old)
+    local library = f:manager()
+    library:_preview()
+    eq(f.preview, nil)
+    local menu = {}
+    library:addToMainMenu(menu)
+    menu.liuju.sub_item_table[1].callback()
+    eq(f:select(old), GENERIC)
+    f:drain()
+    local current = f:images(b)[1]
+    assert(current and current ~= old)
+    eq(f:select(current), current)
+end)
+
+test("An unsupported last book opened while disabled cannot reveal an earlier receipt", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("甲书内容") })
+    f:drain()
+    local old, writes = f:images(a)[1], f.writes
+    a.policy:restore(true)
+    f:reader("B", {}, nil, ".pdf")
+    local library = f:manager()
+    local menu = {}
+    library:addToMainMenu(menu)
+    menu.liuju.sub_item_table[1].callback()
+    f:drain()
+    eq(f:select(old), GENERIC)
+    eq(f.writes, writes)
 end)
 test("Preview ignores a silently edited note until its new wallpaper is ready", function()
     local f = fixture()
@@ -1292,6 +1361,162 @@ test("Pre-style cache and legacy cover paths stay hidden until regenerated", fun
     local new_reader = f:reader("A", { annotation("旧版小票") })
     f:drain()
     eq(f:select(f:images(new_reader)[1]), f:images(new_reader)[1])
+end)
+
+test("A replacement sharing the old sidecar is blocked in the library and survives a book switch", function()
+    local f = fixture()
+    local rows = { annotation("旧文件的批注") }
+    local a = f:reader("A", rows)
+    f:drain()
+    local images, store = f:images(a)
+    local old, old_digest = images[1], store.index:readSetting("book_digest")
+    assert(old_digest)
+    store.index:delSetting("book_digest") -- The 1.1.0 index stored it only in the render key.
+    a:onCloseDocument()
+    f:reader("Other", {}):onCloseDocument()
+    f:manager()
+    local path = a.ui.document.file
+    local replacement = assert(io.open(path .. ".new", "wb"))
+    assert(replacement:write("replacement book"))
+    replacement:close()
+    assert(os.rename(path .. ".new", path))
+
+    local b = f:reader("A", rows)
+    b.ui.doc_props.title = "新文件的书名"
+    b:onBookMetadataChanged()
+    assert(f.settings.data.liuju_last_book.full_digest ~= old_digest)
+    local library = f:manager()
+    library:_preview()
+    eq(f.preview, nil)
+    eq(f:select(old), GENERIC)
+    eq(#f.queue, 0)
+    eq(f.writes, 1)
+    eq(f.saved_docs[path]:readSetting("annotations")[1], rows[1])
+
+    local reopened = f:reader("A", rows)
+    f:update(reopened)
+    local stale_confirmation = assert(f.confirmation)
+    f:reader("C", {})
+    stale_confirmation.ok_callback()
+    f:drain()
+    eq(f.writes, 1)
+    local verified = f:reader("A", rows)
+    f:drain()
+    eq(f.writes, 1)
+    f:update(verified)
+    f.confirmation.ok_callback()
+    f:drain()
+    local updated = f:images(verified)
+    eq(#updated, 1)
+    assert(updated[1] ~= old)
+    eq(f:select(updated[1]), updated[1])
+    eq(store.index:readSetting("book_digest"), f.settings.data.liuju_last_book.full_digest)
+end)
+
+test("File identity recorded while disabled survives switching away before any receipts exist", function()
+    local f = fixture()
+    f.settings.data[Policy.ENABLED] = false
+    local rows = { annotation("尚未制成小票的批注") }
+    local a = f:reader("A", rows)
+    local _, store = f:images(a)
+    local old_digest = store.index:readSetting("book_digest")
+    assert(old_digest)
+    f:reader("B", {})
+    local file = assert(io.open(a.ui.document.file, "wb"))
+    assert(file:write("different book"))
+    file:close()
+
+    f:reader("A", rows)
+    local library = f:manager()
+    local _, toggle = wallpaper_menu(library)
+    toggle.callback()
+    f:drain()
+    eq(f.writes, 0)
+    eq(f:select(), GENERIC)
+    eq(store.index:readSetting("book_digest"), old_digest)
+    library:_preview()
+    assert(f.messages[#f.messages]:find("文件已更换", 1, true))
+end)
+
+test("Library restart finishes a partial style change without dropping a valid receipt", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("第一条"), annotation("第二条"), annotation("第三条") })
+    f:drain()
+    a:onCloseDocument()
+    local library = f:manager()
+    library:_set_style("dark")
+    assert(f:step() and f:step() and f:step())
+    local partial = f:images(a)
+    eq(#partial, 1)
+    f:manager()
+    eq(f:select(partial[1]), partial[1])
+    f:drain()
+    eq(#f:images(a), 3)
+    eq(f.writes, 6)
+end)
+
+test("A corrupt library receipt is regenerated after resume while a valid peer remains selectable", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("第一条"), annotation("第二条") })
+    f:drain()
+    local paths = f:images(a)
+    a:onCloseDocument()
+    local library = f:manager()
+    py_corrupt_png_data(paths[1])
+    eq(f:select(paths[1]), paths[2])
+    library:onSuspend()
+    eq(#f.queue, 0)
+    library:onResume()
+    f:drain()
+    eq(f:select(paths[1]), paths[1])
+    eq(f.writes, 3)
+end)
+
+test("The library recovers when its only receipt was corrupted and sleep was interrupted", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("唯一小票") })
+    f:drain()
+    local path = f:images(a)[1]
+    a:onCloseDocument()
+    f:manager()
+    py_corrupt_png_data(path)
+    eq(f:select(path), GENERIC)
+    assert(io.open(path, "rb") == nil)
+    f:manager()
+    f:drain()
+    eq(f:select(path), path)
+    eq(f.writes, 2)
+end)
+
+test("An inactive library retry cannot change the active reader's screensaver", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("甲书") })
+    f:drain()
+    a:onCloseDocument()
+    local library = f:manager()
+    f.fail_write = true
+    library:_set_style("dark")
+    f:drain()
+    assert(library._retry_sync)
+    f.fail_write = false
+    local b = f:reader("B", { annotation("乙书") })
+    f:drain()
+    local image = f:images(b)[1]
+    library:onResume()
+    eq(f:select(image), image)
+    eq(#f.queue, 0)
+end)
+
+test("Library initialization recognizes layout skips as completed work", function()
+    local f = fixture()
+    local a = f:reader("A", { annotation("甲" .. string.rep("\n", 25) .. "乙") })
+    f:drain()
+    eq(a._last_stats.layout, 1)
+    a:onCloseDocument()
+    f:manager()
+    eq(#f.queue, 0)
+    eq(f.writes, 0)
+    eq(f:select(), GENERIC)
 end)
 
 test("Phrase breaks keep closing quotes and existing newlines intact", function()
