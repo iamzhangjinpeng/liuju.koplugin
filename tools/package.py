@@ -8,9 +8,12 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION = re.search(r'version\s*=\s*"([^"]+)"', (ROOT / "_meta.lua").read_text()).group(1)
 RUNTIME_FILES = (
     "_meta.lua",
+    "liuju_boot.lua",
     "liuju_core.lua",
     "liuju_draw.lua",
     "liuju_layout.lua",
+    "liuju_metadata.lua",
+    "liuju_plugin.lua",
     "liuju_policy.lua",
     "liuju_render.lua",
     "liuju_store.lua",

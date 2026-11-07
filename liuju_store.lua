@@ -2,6 +2,8 @@ local lfs = require("libs/libkoreader-lfs")
 local util = require("util")
 local LuaSettings = require("luasettings")
 local RenderImage = require("ui/renderimage")
+local dump = require("dump")
+local ffiutil = require("ffi/util")
 local Store = {}
 Store.__index = Store
 
@@ -71,10 +73,40 @@ function Store.open_index(state_root, book_id)
     return index
 end
 
+-- LuaSettings:flush returns the settings object even when its write fails.
+-- Keep its existing on-disk format, but check every write before publishing it.
+local function flush_index(index)
+    local path = assert(index.file)
+    local temp = path .. ".tmp"
+    local data = "return " .. dump(index.data, nil, true) .. "\n"
+    if mode(temp) then remove(temp) end
+    local file = assert(io.open(temp, "wb"))
+    local ok, err = file:write(data)
+    if ok then ok, err = file:flush() end
+    if ok then
+        local called, synced, why = pcall(ffiutil.fsyncOpenedFile, file, true)
+        if called then ok, err = synced, why
+        else ok, err = false, synced end
+    end
+    local closed, close_err = file:close()
+    if ok and closed then ok, err = os.rename(temp, path)
+    else ok, err = false, err or close_err end
+    if not ok then
+        os.remove(temp)
+        error(err or "Cannot save receipt index")
+    end
+    assert(ffiutil.fsyncDirectory(path:match("^(.*)/[^/]+$")))
+end
+
 function Store.save_book_digest(state_root, index, digest)
     directory(state_root)
+    local previous = index:readSetting("book_digest")
     index:saveSetting("book_digest", digest)
-    if index:flush() == false then error("Cannot save book identity") end
+    local ok, err = pcall(flush_index, index)
+    if not ok then
+        index:saveSetting("book_digest", previous)
+        error(err, 0)
+    end
 end
 
 function Store.new(root, state_root, book_id, width, height)
@@ -206,7 +238,7 @@ function Store:filter_limit(limit)
         if self.counts ~= false then
             self.counts = false
             self.index:saveSetting("counts", false)
-            self.index:flush()
+            flush_index(self.index)
         end
         return {}, 0
     end
@@ -224,8 +256,7 @@ function Store:save_index()
     self.index:saveSetting("skipped", self.skipped)
     self.index:saveSetting("width", self.width)
     self.index:saveSetting("height", self.height)
-    local result = self.index:flush()
-    if result == false then error("Cannot save image index") end
+    flush_index(self.index)
 end
 
 function Store:temp_path()

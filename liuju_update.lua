@@ -6,6 +6,8 @@ local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
 local ConfirmBox = require("ui/widget/confirmbox")
 local _ = require("gettext")
+local base = debug.getinfo(1, "S").source:match("^@(.*/)") or "./"
+local Boot = dofile(base .. "liuju_boot.lua")
 local Updater = {}
 Updater.__index = Updater
 
@@ -14,8 +16,8 @@ local RELEASES = "https://api.github.com/repos/" .. REPO .. "/releases/"
 local MAX_ZIP = 2 * 1024 * 1024
 local MAX_UNPACKED = 8 * 1024 * 1024
 local REQUIRED = {
-    "_meta.lua", "main.lua", "liuju_core.lua", "liuju_draw.lua", "liuju_layout.lua",
-    "liuju_policy.lua", "liuju_render.lua", "liuju_store.lua", "liuju_update.lua",
+    "_meta.lua", "main.lua", "liuju_boot.lua", "liuju_plugin.lua", "liuju_core.lua", "liuju_draw.lua", "liuju_layout.lua",
+    "liuju_metadata.lua", "liuju_policy.lua", "liuju_render.lua", "liuju_store.lua", "liuju_update.lua",
     "assets/lyrics-background.png", "assets/date-card-background.png", "assets/dark-card-background.png",
 }
 local worker, installed_version
@@ -200,21 +202,8 @@ local function prepare(core, stage, version, size, digest, id)
     return "ready"
 end
 
-local function remove_tree(path)
-    local kind = mode(path)
-    if kind == "directory" then
-        for name in lfs.dir(path) do
-            if name ~= "." and name ~= ".." then remove_tree(path .. "/" .. name) end
-        end
-    end
-    if kind then assert(os.remove(path)) end
-end
-
 local function cleanup(stage)
-    if stage then
-        local ok, err = pcall(remove_tree, stage)
-        if not ok then logger.warn("留句: 更新目录未能清理", tostring(err)) end
-    end
+    if stage then Boot.remove(stage) end
 end
 
 local function staging_dir(parent)
@@ -224,18 +213,6 @@ local function staging_dir(parent)
         if lfs.mkdir(path) then return path end
         if not mode(path) then break end
     end
-end
-
-local function replace(live, stage)
-    local previous = stage .. "/previous"
-    if mode(live) ~= "directory" or mode(stage .. "/next") ~= "directory" then return false end
-    local moved, err = os.rename(live, previous)
-    if not moved then return false, err end
-    moved, err = os.rename(stage .. "/next", live)
-    if moved then return true end
-    local restored, why = os.rename(previous, live)
-    if not restored then return false, why, previous end
-    return false, err
 end
 
 local function tell(text)
@@ -316,31 +293,24 @@ function Updater:_install(version, size, digest, id)
             tell(_("下载或校验失败，已保留当前版本。请检查网络和剩余空间后重试。"))
             return
         end
-        local ok, err, backup = replace(self.path, stage)
-        if not ok then
-            logger.warn("留句: 无法替换插件目录", tostring(err))
-            if backup then
-                tell(_("无法恢复旧版本。请通过 USB 将以下目录移回 liuju.koplugin。\n") .. backup)
-            else
-                cleanup(stage)
-                tell(_("安装失败，已保留当前版本。"))
-            end
+        local boot = Boot.new(self.path)
+        local ok, published, detail = pcall(boot.publish, boot, stage .. "/next", version)
+        cleanup(stage)
+        if not ok or not published then
+            logger.warn("留句: 无法登记新版本", tostring(ok and detail or published))
+            tell(_("无法安排更新，当前版本仍可使用。"))
             return
         end
         installed_version = version
-        if ffiutil.fsyncDirectory(stage) and ffiutil.fsyncDirectory(parent) then
-            cleanup(stage)
-        else
-            logger.warn("留句: 更新备份仍保留在", stage)
-        end
-        UIManager:askForRestart(string.format(_("留句 %s 已安装。重启 KOReader 后生效。"), version))
+        if not detail then logger.warn("留句: 新版本的待启动记录未能确认写入磁盘") end
+        UIManager:askForRestart(string.format(_("留句 %s 已准备好。重启 KOReader 后试用新版本。"), version))
     end)
 end
 
 function Updater:check()
     if not self.alive() then return end
     if installed_version then
-        UIManager:askForRestart(string.format(_("留句 %s 已安装。重启 KOReader 后生效。"), installed_version))
+        UIManager:askForRestart(string.format(_("留句 %s 已准备好。重启 KOReader 后试用新版本。"), installed_version))
         return
     end
     if worker then tell(_("留句正在检查或下载更新。")); return end

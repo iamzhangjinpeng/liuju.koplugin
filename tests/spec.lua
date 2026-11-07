@@ -113,6 +113,13 @@ end)
 local GENERIC = "resources/koreader.png"
 local fixture_id = 0
 local real_dofile = dofile
+local function dump(value)
+    if type(value) == "string" then return string.format("%q", value) end
+    if type(value) ~= "table" then return tostring(value) end
+    local parts = {}
+    for key, item in pairs(value) do parts[#parts + 1] = "[" .. dump(key) .. "]=" .. dump(item) end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
 local function fixture()
     fixture_id = fixture_id + 1
     local f = { root = SCRATCH .. "/case-" .. fixture_id, queue = {}, indices = {}, writes = 0,
@@ -222,7 +229,6 @@ local function fixture()
         ["ui/widget/infomessage"] = {new=function(_,t)return t end},
         ["ui/widget/confirmbox"] = {new=function(_,t)return t end},
         ["datastorage"] = {getDataDir=function() return f.root end,getSettingsDir=function() return f.root.."/settings" end},
-        ["docsettings"] = {open = function(_, path) return f.saved_docs[path] or settings() end},
         ["device"] = {
             supportsScreensaver = function() return not f.native_sleep_only end,
             screen={getWidth=function()return 1072 end,getHeight=function()return 1448 end},
@@ -230,6 +236,11 @@ local function fixture()
         ["util"] = {makePath=function(path) return py_mkdir(path) end},
         ["logger"] = {warn=function(...)f.warnings[#f.warnings+1]={...}end},
         ["gettext"] = function(t)return t end,
+        ["dump"] = dump,
+        ["ffi/util"] = {
+            fsyncOpenedFile = function() return not f.fail_index_sync end,
+            fsyncDirectory = function() return true end,
+        },
         ["libs/libkoreader-lfs"] = {
             attributes=function(path,field)
                 if path == f.fixed_path and not field then return f.fixed_attrs end
@@ -243,16 +254,26 @@ local function fixture()
             end,
         },
         ["luasettings"] = {open=function(_,path)
-            if not f.indices[path] then f.indices[path]=settings() end
+            if not f.indices[path] then
+                local load = loadfile(path)
+                f.indices[path] = settings(load and load() or nil)
+                f.indices[path].file = path
+            end
             return f.indices[path]
         end},
     }
     for name, value in pairs(modules) do package.loaded[name] = value end
     dofile=function(path)
         if path:match("liuju_draw%.lua$") then return draw end
+        if path:match("liuju_metadata%.lua$") then
+            return { read = function(book)
+                if f.read_metadata then return f.read_metadata(book) end
+                return (f.saved_docs[book] or settings()).data
+            end }
+        end
         return real_dofile(path)
     end
-    local plugin = assert(loadfile(TEST_ROOT.."/main.lua"))()
+    local plugin = assert(loadfile(TEST_ROOT.."/liuju_plugin.lua"))()
     dofile = real_dofile
     function f:save_reader()
         if self.instance then
@@ -739,6 +760,155 @@ test("Lowering the limit in the library filters both the screensaver pool and pr
     manager:_preview()
     eq(f.preview, nil)
     eq(f.messages[#f.messages], "当前书暂无小票")
+end)
+
+test("Raising the limit in the library queues newly eligible receipts and retains valid ones", function()
+    local f = fixture()
+    f.settings:saveSetting("liuju_character_limit", 2)
+    local reader = f:reader("short-limit", { annotation("短句"), annotation("这是要新增的小票") })
+    f:drain()
+    local paths = f:images(reader)
+    eq(#paths, 1)
+    local library = f:manager()
+    f:drain()
+    library:_set_limit(20)
+    eq(f:select(paths[1]), paths[1])
+    f:drain()
+    eq(#f:images(reader), 2)
+    eq(f.writes, 2)
+end)
+
+test("Library sleep queues externally synced receipts when its pool is stale or empty", function()
+    for _, initially_empty in ipairs({ false, true }) do
+        local f = fixture()
+        local rows = initially_empty and {} or { annotation("原摘录", "原批注") }
+        local reader = f:reader("sync-library", rows)
+        f:drain()
+        local old = f:images(reader)[1]
+        local file = reader.ui.document.file
+        local library = f:manager()
+        f:drain()
+        local writes = f.writes
+        f.saved_docs[file]:saveSetting("annotations", { annotation("新摘录", "同步后的批注") })
+        eq(f:select(old), GENERIC)
+        library:onSuspend()
+        library:onResume()
+        f:drain()
+        local pictures = f:images(reader)
+        eq(#pictures, 1)
+        assert(pictures[1] ~= old)
+        eq(f:select(pictures[1]), pictures[1])
+        eq(f.writes, writes + 1)
+    end
+end)
+
+test("Library sync removes externally deleted notes from both the pool and index", function()
+    for _, reopen in ipairs({ false, true }) do
+        for _, delete_all in ipairs({ false, true }) do
+            local f = fixture()
+            local first, second = annotation("第一条原文"), annotation("第二条原文")
+            second.pos0, second.pos1 = "second-start", "second-end"
+            local reader = f:reader("library-delete", { first, second })
+            f:drain()
+            local paths, store = f:images(reader)
+            eq(#paths, 2)
+            local library = f:manager()
+            f:drain()
+            f.saved_docs[reader.ui.document.file]:saveSetting("annotations", delete_all and {} or { first })
+            if reopen then
+                f:manager()
+            else
+                local shown = f:select(paths[1])
+                if delete_all then eq(shown, GENERIC) end
+                library:onSuspend()
+                library:onResume()
+            end
+            f:drain()
+            local remaining = f:images(reader)
+            eq(#remaining, delete_all and 0 or 1)
+            for _, path in ipairs(paths) do
+                local index_count = store.index:readSetting("counts")[path:match("[^/]+$")]
+                if path == remaining[1] then
+                    assert(index_count)
+                    eq(f:select(path), path)
+                else
+                    eq(index_count, nil)
+                    eq(io.open(path, "rb"), nil)
+                end
+            end
+            eq(f.writes, 2)
+        end
+    end
+end)
+
+test("A transient sidecar read failure leaves the original file and receipt cache intact", function()
+    local f = fixture()
+    local notes = { annotation("原摘录", "原批注") }
+    local reader = f:reader("readonly", notes)
+    f:drain()
+    local image = f:images(reader)[1]
+    local source = reader.ui.document.file
+    local dir = source:gsub("%.epub$", ".sdr")
+    py_mkdir(dir)
+    local sidecar = dir .. "/metadata.epub.lua"
+    local file = assert(io.open(sidecar, "wb"))
+    assert(file:write("return { annotations = " .. dump(notes) .. " }"))
+    file:close()
+    package.loaded.docsettings = {
+        getSidecarFilename = function() return "metadata.epub.lua" end,
+        getSidecarDir = function(_, _, location) return location == "doc" and dir or f.root .. "/central" end,
+        open = function() error("must not use DocSettings:open") end,
+    }
+    f.read_metadata = real_dofile(TEST_ROOT .. "/liuju_metadata.lua").read
+    local library = f:manager()
+    local compile = loadfile
+    loadfile = function(path, ...)
+        if path == sidecar then return nil, "simulated read error" end
+        return compile(path, ...)
+    end
+    local ok, err = pcall(function()
+        eq(f:select(image), GENERIC)
+        library:_preview()
+        eq(f.preview, nil)
+        eq(#f.queue, 0)
+        assert(io.open(sidecar, "rb")):close()
+        assert(io.open(image, "rb")):close()
+    end)
+    loadfile = compile
+    assert(ok, err)
+    eq(#real_dofile(sidecar).annotations, 1)
+    eq(f:select(image), image)
+    eq(f.writes, 1)
+end)
+
+test("An index write failure preserves provenance across book switches and blocks inherited notes", function()
+    local f = fixture()
+    f.settings:saveSetting("liuju_enabled", false)
+    f.fail_index_sync = true
+    local old_note = annotation("旧书中的批注")
+    local original = f:reader("same", { old_note })
+    local id = Core.book_id(original.ui.document.file)
+    local index = original.state_root .. "/" .. id .. ".lua"
+    assert(not original._opened.provenance_saved)
+    eq(io.open(index, "rb"), nil)
+    local expected = f.settings:readSetting("liuju_pending_book_digests")[id]
+    eq(expected, original._opened.full_digest)
+    original:onCloseDocument()
+    f.fail_index_sync = false
+    f:reader("other", {})
+    local file = assert(io.open(original.ui.document.file, "wb"))
+    assert(file:write("replacement book content"))
+    file:close()
+    f.settings:saveSetting("liuju_enabled", true)
+    local replacement = f:reader("same", { old_note })
+    f:drain()
+    eq(f.writes, 0)
+    eq(assert(loadfile(index))().book_digest, expected)
+    f:update(replacement)
+    assert(f.confirmation)
+    f.confirmation.ok_callback()
+    f:drain()
+    eq(f.writes, 1)
 end)
 test("A library repair reapplies a lower limit before recovering an incomplete index", function()
     local f = fixture()
